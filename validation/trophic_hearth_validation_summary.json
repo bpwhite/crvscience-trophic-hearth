@@ -1,0 +1,39 @@
+{
+  "app": "TrophicHearth",
+  "version": "0.9.3",
+  "license": "GPL-3.0-or-later",
+  "repository": "https://github.com/bpwhite/crvscience-trophic-hearth",
+  "binary": "19_Trophic-Hearth.exe",
+  "biomes_count": 9,
+  "cargo_tests": {
+    "unit_and_integration": 14,
+    "passed": 14,
+    "failed": 0
+  },
+  "headless_screenshots": [
+    {
+      "view": 1,
+      "biome": "RockyIntertidalTidepool",
+      "file": "validation/headless_screenshot.png",
+      "width": 1600,
+      "height": 1000,
+      "bytes": 254290
+    },
+    {
+      "view": 2,
+      "biome": "IndoPacificCoralReef",
+      "file": "validation/headless_screenshot_2.png",
+      "width": 1600,
+      "height": 1000,
+      "bytes": 312673
+    },
+    {
+      "view": 3,
+      "biome": "DeepSeaHydrothermalVent",
+      "file": "validation/headless_screenshot_3.png",
+      "width": 1600,
+      "height": 1000,
+      "bytes": 245512
+    }
+  ]
+}

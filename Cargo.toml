@@ -1,0 +1,35 @@
+[package]
+name = "trophic-hearth"
+version = "0.9.3"
+edition = "2021"
+authors = ["Bryan P. White <crvscience.com>"]
+license = "GPL-3.0-or-later"
+description = "Nine-biome 3D living trophic diorama and fireplace simulator (Neotropical Rainforest, Pacific Giant Kelp Forest, Indo-Pacific Coral Reef, Temperate Freshwater Lake, Deep-Sea Hydrothermal Vent, PNW Old-Growth Salmon Creek, Midwater Pelagic Rift, Cold-Seep Brine Pool, and Rocky Intertidal Tidepool) with biologically accurate 3D anatomy, physics, bioacoustics, and diurnal cycles."
+
+[features]
+default = ["live-audio"]
+live-audio = ["dep:rodio"]
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+eframe = { version = "0.31", features = ["wgpu", "persistence"] }
+egui = "0.31"
+glam = { version = "0.29", features = ["serde"] }
+png = "0.18"
+rand = "0.8"
+rand_chacha = "0.3"
+rfd = "0.15"
+rodio = { version = "0.19", optional = true }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+wgpu = "24.0"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_System_Console"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
