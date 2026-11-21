@@ -163,6 +163,14 @@ fn attach_parent_console_if_cli_args() {
     }
 }
 
+fn validate_stratum(idx: usize) -> Result<TrophicStratum, String> {
+    if idx > 4 {
+        return Err(format!("Invalid --stratum {idx} (expected 0..=4)"));
+    }
+    TrophicStratum::from_index(idx)
+        .ok_or_else(|| format!("Invalid --stratum {idx} (expected 0..=4)"))
+}
+
 fn launch_gui(
     biome: CliBiome,
     stratum: Option<usize>,
@@ -170,11 +178,10 @@ fn launch_gui(
     db: PathBuf,
     seed: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let initial_stratum = stratum.map(validate_stratum).transpose()?;
     let mut world = RainforestWorld::new_for_biome(biome.into(), seed);
-    if let Some(idx) = stratum {
-        if let Some(st) = TrophicStratum::from_index(idx) {
-            world.focus = TrophicFocus::Single(st);
-        }
+    if let Some(st) = initial_stratum {
+        world.focus = TrophicFocus::Single(st);
     }
 
     let native_options = eframe::NativeOptions {
@@ -263,4 +270,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stratum_cli_range_validation_rejects_out_of_bounds() {
+        for idx in 0..=4 {
+            assert!(validate_stratum(idx).is_ok(), "stratum {idx} should be valid");
+        }
+        let err5 = validate_stratum(5).expect_err("stratum 5 must be rejected");
+        assert_eq!(err5, "Invalid --stratum 5 (expected 0..=4)");
+        let err99 = validate_stratum(99).expect_err("stratum 99 must be rejected");
+        assert_eq!(err99, "Invalid --stratum 99 (expected 0..=4)");
+
+        let parsed = Cli::try_parse_from(["trophic-hearth", "--stratum", "7"]).expect("clap parses usize");
+        let res = parsed.stratum.map(validate_stratum).transpose();
+        assert_eq!(
+            res.expect_err("stratum 7 fails validation"),
+            "Invalid --stratum 7 (expected 0..=4)"
+        );
+    }
 }

@@ -13,6 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://gnu.org>.
 
+use trophic_hearth::app::TrophicHearthApp;
 use trophic_hearth::audio::{export_ambient_soundscape_wav, synthesize_cue_stereo};
 use trophic_hearth::events::{SoundCue, SoundCueKind, StochasticEventKind};
 use trophic_hearth::models_3d::append_organism_geometry;
@@ -352,4 +353,103 @@ fn json_snapshot_envelope_roundtrip() {
         serde_json::from_str(&json).expect("Deserialize TrophicSnapshotV1");
     assert_eq!(decoded.slot_name, "vent_test");
     assert_eq!(decoded.world.biome, BiomeKind::DeepSeaHydrothermalVent);
+}
+
+#[test]
+fn headless_gui_shortcuts_f1_escape_and_focus_guarded_space_tab_m() {
+    let ctx = egui::Context::default();
+    let world = RainforestWorld::new_for_biome(BiomeKind::RockyIntertidalTidepool, 2026);
+    let first_org_id = world.organisms.first().map(|o| o.id);
+    let mut app = TrophicHearthApp::new_headless(world, false);
+    app.show_inspector_drawer = true;
+    assert!(app.paused);
+    assert!(!app.zen_hearth_mode);
+    assert!(!app.show_about_window);
+    assert!(app.audio.muted);
+
+    let run_frame = |app: &mut TrophicHearthApp, key: Option<egui::Key>| {
+        let mut raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1360.0, 820.0),
+            )),
+            ..Default::default()
+        };
+        if let Some(k) = key {
+            raw.events.push(egui::Event::Key {
+                key: k,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        let _ = ctx.run(raw, |ctx| {
+            app.ui_step(ctx, false);
+        });
+    };
+
+    // Warmup frame without focus
+    run_frame(&mut app, None);
+
+    // Unfocused Space, Tab, and M toggle paused, zen_hearth_mode, and audio.muted
+    run_frame(&mut app, Some(egui::Key::Space));
+    assert!(!app.paused, "Space should unpause when unfocused");
+    run_frame(&mut app, Some(egui::Key::Tab));
+    assert!(app.zen_hearth_mode, "Tab should enter Zen Hearth Mode");
+    run_frame(&mut app, Some(egui::Key::M));
+    assert!(!app.audio.muted, "M should toggle audio mute");
+
+    // Exit Zen Hearth Mode so the inspector drawer & slot_name_input are shown
+    run_frame(&mut app, Some(egui::Key::Tab));
+    assert!(!app.zen_hearth_mode);
+
+    // Focus slot_name_input -> Space, Tab, and M must NOT toggle when typing in text input
+    ctx.memory_mut(|m| m.request_focus(egui::Id::new("slot_name_input")));
+    run_frame(&mut app, None);
+    assert!(ctx.wants_keyboard_input());
+    run_frame(&mut app, Some(egui::Key::Space));
+    run_frame(&mut app, Some(egui::Key::Tab));
+    run_frame(&mut app, Some(egui::Key::M));
+    assert!(!app.paused, "Space must not pause while text input is focused");
+    assert!(
+        !app.zen_hearth_mode,
+        "Tab must not toggle Zen Hearth Mode while text input is focused"
+    );
+    assert!(
+        !app.audio.muted,
+        "M must not mute audio while text input is focused"
+    );
+
+    // Clear focus, test F1 & Escape cascade (show_about_window -> zen_hearth_mode -> selected_organism_id)
+    ctx.memory_mut(|m| m.surrender_focus(egui::Id::new("slot_name_input")));
+    run_frame(&mut app, None);
+    app.zen_hearth_mode = true;
+    app.selected_organism_id = first_org_id;
+
+    run_frame(&mut app, Some(egui::Key::F1));
+    assert!(app.show_about_window, "F1 should open About window");
+
+    run_frame(&mut app, Some(egui::Key::Escape));
+    assert!(!app.show_about_window, "First Escape closes About window");
+    assert!(app.zen_hearth_mode, "First Escape keeps Zen Hearth Mode");
+
+    run_frame(&mut app, Some(egui::Key::Escape));
+    assert!(!app.zen_hearth_mode, "Second Escape exits Zen Hearth Mode");
+    assert_eq!(
+        app.selected_organism_id, first_org_id,
+        "Second Escape preserves selected organism"
+    );
+
+    run_frame(&mut app, Some(egui::Key::Escape));
+    assert_eq!(
+        app.selected_organism_id, None,
+        "Third Escape clears selected_organism_id"
+    );
+
+    // F1 toggles About window open and closed
+    run_frame(&mut app, Some(egui::Key::F1));
+    assert!(app.show_about_window);
+    run_frame(&mut app, Some(egui::Key::F1));
+    assert!(!app.show_about_window);
 }

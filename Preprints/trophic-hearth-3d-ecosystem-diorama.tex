@@ -1,0 +1,29 @@
+\documentclass[10pt,letterpaper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[margin=0.65in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{hyperref}
+
+\title{\textbf{TrophicHearth: Nine-Biome 3D Living Trophic Diorama, Fire-Pit Hearth, and Bioacoustic Ecosystem Simulator in Rust}}
+\author{Bryan P. White (ORCID: \href{https://orcid.org/0000-0003-4191-3511}{0000-0003-4191-3511}) \\ CRV Science Labs \\ \small CRV Science Apps Hub: \url{https://crvscience.com/apps} \\ \small DOI: \href{https://doi.org/10.5281/zenodo.24359107}{10.5281/zenodo.24359107}}
+\date{November 2026 \\ \small Preprint ID: APP-PREPRINT-20 (v0.9.3 Software Preprint) \\ \small Categories: q-bio.PE \textbullet{} cs.GR \textbullet{} cs.MA}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+TrophicHearth (v0.9.3) is an open-source, GPU-accelerated 3D ecological diorama and trophic energy simulator implemented in safe Rust under GPL-3.0-or-later licensing. Spanning nine marine, benthic, freshwater, and terrestrial biomes---Rocky Intertidal Tidepool, Cold-Seep Brine Pool, Midwater Pelagic Rift, Pacific Northwest Salmon Creek, Deep-Sea Hydrothermal Vent, Temperate Freshwater Lake, Indo-Pacific Coral Reef, Pacific Giant Kelp Forest, and Neotropical Rainforest---the application couples continuous-time autonomous foraging, predator-prey encounters, and benthic/terrestrial decomposition directly to a Lindeman five-tier energetic ledger (L0 autotrophs through L4 decomposers) and diurnal solar or hydrothermal hearth forcing. A 2D diffusing pheromone substrate, 44.1 kHz stereo procedural bioacoustic soundscape engine, SQLite WAL state snapshots, and deterministic CLI sweeps enable reproducible multi-biome experiments without external cloud dependencies. Across 24-hour seeded CLI simulations (dt = 0.05 s, seed = 20261116, 2,880 steps per biome), Deep-Sea Hydrothermal Vent sustained the highest cumulative primary production at 653.46 kcal GPP through continuous chemosynthetic hearth flux, compared against 411.85 kcal in Giant Kelp Forest and 383.09 kcal in Coral Reef, while standing total trophic biomass ranged from 5,970.04 kcal (Tidepool) to 8,110.67 kcal (Salmon Creek) with 6,213.31 to 6,821.60 mg of closed-loop nutrient mineralization and 14/14 integration checks passing.
+\end{abstract}
+
+\section{Background and Software Architecture}
+3D living ecosystem diorama and trophic energy simulator across nine aquatic and terrestrial biomes with diurnal solar/fire-pit forcing, pheromone fields, procedural bioacoustics, and deterministic CLI sweeps. Open-source code, documentation, and peer applications are indexed on the CRV Science Apps hub at \url{https://crvscience.com/apps}.
+
+\section{Headless Validation Summary}
+All headless integration tests were executed via \texttt{cargo test} and archived directly inside the public repository.
+
+\begin{thebibliography}{10}
+
+\end{thebibliography}
+\end{document}

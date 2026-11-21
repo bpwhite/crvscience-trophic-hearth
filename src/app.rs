@@ -112,11 +112,30 @@ impl TrophicHearthApp {
         let raw_dt = now.duration_since(self.last_frame).as_secs_f32().min(0.08);
         self.last_frame = now;
 
-        if ctx.input(|i| i.key_pressed(egui::Key::Tab)) {
-            self.zen_hearth_mode = !self.zen_hearth_mode;
+        if ctx.input(|i| i.key_pressed(egui::Key::F1)) {
+            self.show_about_window = !self.show_about_window;
         }
-        if ctx.input(|i| i.key_pressed(egui::Key::Space)) {
-            self.paused = !self.paused;
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            if self.show_about_window {
+                self.show_about_window = false;
+            } else if self.zen_hearth_mode {
+                self.zen_hearth_mode = false;
+            } else if self.selected_organism_id.is_some() {
+                self.selected_organism_id = None;
+            }
+        }
+        let mut tab_toggled_hearth = false;
+        if !ctx.wants_keyboard_input() {
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab)) {
+                self.zen_hearth_mode = !self.zen_hearth_mode;
+                tab_toggled_hearth = true;
+            }
+            if ctx.input(|i| i.key_pressed(egui::Key::Space)) {
+                self.paused = !self.paused;
+            }
+            if ctx.input(|i| i.key_pressed(egui::Key::M)) {
+                self.audio.muted = !self.audio.muted;
+            }
         }
 
         if advance_sim && !self.paused {
@@ -211,13 +230,26 @@ impl TrophicHearthApp {
                     ui.separator();
                     let ks_on = !self.world.ledger.keystone_removed;
                     if ui
-                        .selectable_label(!ks_on, if ks_on { "Keystone: Intact" } else { "[!] Keystone: Removed" })
+                        .selectable_label(
+                            !ks_on,
+                            if ks_on {
+                                "Keystone: Intact"
+                            } else {
+                                "[!] Keystone: Removed"
+                            },
+                        )
+                        .on_hover_text(
+                            "Toggle keystone predator/guild removal to induce a Paine (1966) trophic cascade.",
+                        )
                         .clicked()
                     {
                         self.world.ledger.keystone_removed = !self.world.ledger.keystone_removed;
                     }
                     if ui
                         .selectable_label(self.world.ledger.show_flux_arcs, "Flux Arcs")
+                        .on_hover_text(
+                            "Toggle calm 3D food-web energy-flux arcs showing kcal transfers across trophic strata.",
+                        )
                         .clicked()
                     {
                         self.world.ledger.show_flux_arcs = !self.world.ledger.show_flux_arcs;
@@ -590,8 +622,30 @@ impl TrophicHearthApp {
                         ui.separator();
                         ui.heading("Keystone Cascade & Sparkline");
                         ui.small(format!("Keystone: {}", self.world.biome.keystone_guild_label()));
-                        let (spark_rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 52.0), Sense::hover());
-                        ui.painter().rect_filled(spark_rect, egui::CornerRadius::same(6), Color32::from_rgb(8, 22, 20));
+                        ui.horizontal_wrapped(|ui| {
+                            ui.small(
+                                RichText::new("● L1 Producers")
+                                    .color(Color32::from_rgb(74, 222, 128)),
+                            );
+                            ui.small(
+                                RichText::new("● L2 Primary")
+                                    .color(Color32::from_rgb(56, 189, 248)),
+                            );
+                            ui.small(
+                                RichText::new("● L4 Apex")
+                                    .color(Color32::from_rgb(251, 113, 133)),
+                            );
+                        });
+                        let (spark_rect, spark_resp) = ui.allocate_exact_size(
+                            egui::vec2(ui.available_width(), 52.0),
+                            Sense::hover(),
+                        );
+                        ui.painter().rect_filled(
+                            spark_rect,
+                            egui::CornerRadius::same(6),
+                            Color32::from_rgb(8, 22, 20),
+                        );
+                        let baselines = TrophicEnergyLedger::baseline_for_biome(self.world.biome);
                         let hist = &self.world.ledger.biomass_history;
                         if hist.len() >= 2 {
                             for &(series_idx, col) in &[
@@ -599,20 +653,94 @@ impl TrophicHearthApp {
                                 (2_usize, Color32::from_rgb(56, 189, 248)),
                                 (4_usize, Color32::from_rgb(251, 113, 133)),
                             ] {
-                                let base_v = TrophicEnergyLedger::baseline_for_biome(self.world.biome)[series_idx].max(1.0);
+                                let base_v = baselines[series_idx].max(1.0);
                                 let pts: Vec<egui::Pos2> = hist
                                     .iter()
                                     .enumerate()
                                     .map(|(i, sample)| {
-                                        let x = spark_rect.left() + 4.0 + (i as f32 / (hist.len() - 1) as f32) * (spark_rect.width() - 8.0);
-                                        let ratio = (sample[series_idx] / (base_v * 2.3)).clamp(0.04, 0.96);
-                                        let y = spark_rect.bottom() - 4.0 - ratio * (spark_rect.height() - 8.0);
+                                        let x = spark_rect.left()
+                                            + 4.0
+                                            + (i as f32 / (hist.len() - 1) as f32)
+                                                * (spark_rect.width() - 8.0);
+                                        let ratio =
+                                            (sample[series_idx] / (base_v * 2.3)).clamp(0.04, 0.96);
+                                        let y = spark_rect.bottom()
+                                            - 4.0
+                                            - ratio * (spark_rect.height() - 8.0);
                                         egui::pos2(x, y)
                                     })
                                     .collect();
-                                ui.painter().add(egui::Shape::line(pts, egui::Stroke::new(1.6_f32, col)));
+                                ui.painter()
+                                    .add(egui::Shape::line(pts, egui::Stroke::new(1.6_f32, col)));
                             }
                         }
+                        let hover_idx = if hist.len() >= 2 {
+                            spark_resp.hover_pos().map(|hp| {
+                                let t = ((hp.x - (spark_rect.left() + 4.0))
+                                    / (spark_rect.width() - 8.0).max(1.0))
+                                .clamp(0.0, 1.0);
+                                ((t * (hist.len() - 1) as f32).round() as usize)
+                                    .min(hist.len() - 1)
+                            })
+                        } else {
+                            None
+                        };
+                        if let Some(hi) = hover_idx {
+                            let hx = spark_rect.left()
+                                + 4.0
+                                + (hi as f32 / (hist.len() - 1) as f32)
+                                    * (spark_rect.width() - 8.0);
+                            ui.painter().line_segment(
+                                [
+                                    egui::pos2(hx, spark_rect.top() + 3.0),
+                                    egui::pos2(hx, spark_rect.bottom() - 3.0),
+                                ],
+                                egui::Stroke::new(
+                                    1.0_f32,
+                                    Color32::from_rgba_unmultiplied(226, 232, 240, 140),
+                                ),
+                            );
+                        }
+                        let live_kcal = self.world.ledger.biomass_kcal;
+                        let hovered_sample = hover_idx.and_then(|i| hist.get(i).copied());
+                        spark_resp.on_hover_ui_at_pointer(|ui| {
+                            ui.strong("Keystone Biomass Cascade (Live & Sampled)");
+                            let sample = hovered_sample.unwrap_or(live_kcal);
+                            for (idx, lbl, col) in [
+                                (1_usize, "L1 Producers", Color32::from_rgb(74, 222, 128)),
+                                (
+                                    2_usize,
+                                    "L2 Primary Consumers",
+                                    Color32::from_rgb(56, 189, 248),
+                                ),
+                                (
+                                    4_usize,
+                                    "L4 Apex Predators",
+                                    Color32::from_rgb(251, 113, 133),
+                                ),
+                            ] {
+                                let base = baselines[idx].max(1.0);
+                                let live_v = live_kcal[idx];
+                                let live_pct = (live_v / base) * 100.0;
+                                if hovered_sample.is_some() {
+                                    let samp_v = sample[idx];
+                                    let samp_pct = (samp_v / base) * 100.0;
+                                    ui.colored_label(
+                                        col,
+                                        format!(
+                                            "{lbl}: {live_v:.0} kcal ({live_pct:.0}% of baseline) | sample: {samp_v:.0} kcal ({samp_pct:.0}%)"
+                                        ),
+                                    );
+                                } else {
+                                    ui.colored_label(
+                                        col,
+                                        format!(
+                                            "{lbl}: {live_v:.0} kcal ({live_pct:.0}% of baseline)"
+                                        ),
+                                    );
+                                }
+                            }
+                        });
 
                         ui.separator();
                         ui.heading("Trophic Energy Pyramid");
@@ -854,7 +982,10 @@ impl TrophicHearthApp {
                             ui.add_space(4.0);
                             ui.label(RichText::new("SQLite WAL Snapshots").strong());
                             ui.horizontal(|ui| {
-                                ui.text_edit_singleline(&mut self.slot_name_input);
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.slot_name_input)
+                                        .id(egui::Id::new("slot_name_input")),
+                                );
                                 if ui.button("Save").clicked() {
                                     if let Some(ref st) = self.store {
                                         match st.save_world(&self.slot_name_input, &self.world) {
@@ -954,7 +1085,10 @@ impl TrophicHearthApp {
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
                 let rect = ui.available_rect_before_wrap();
-                let resp = ui.allocate_rect(rect, Sense::click_and_drag());
+                let resp = ui.allocate_rect(
+                    rect,
+                    Sense::click_and_drag() - Sense::focusable_noninteractive(),
+                );
 
                 if resp.dragged_by(egui::PointerButton::Primary) {
                     let delta = resp.drag_delta();
@@ -987,31 +1121,53 @@ impl TrophicHearthApp {
                     self.selected_organism_id,
                 );
 
+                let find_nearest_organism = |pos: egui::Pos2| -> Option<u32> {
+                    let mut best: Option<(u32, f32)> = None;
+                    for &(oid, sp) in &hitboxes {
+                        let d = sp.distance(pos);
+                        if d < 26.0 && best.map_or(true, |(_, bd)| d < bd) {
+                            best = Some((oid, d));
+                        }
+                    }
+                    best.map(|(id, _)| id)
+                };
+
                 if resp.clicked() {
                     if let Some(click_pos) = resp.interact_pointer_pos() {
-                        let mut best: Option<(u32, f32)> = None;
-                        for (oid, sp) in hitboxes {
-                            let d = sp.distance(click_pos);
-                            if d < 26.0 && best.map_or(true, |(_, bd)| d < bd) {
-                                best = Some((oid, d));
+                        self.selected_organism_id = find_nearest_organism(click_pos);
+                    }
+                }
+
+                let zen_pill = egui::Rect::from_min_size(
+                    rect.right_top() + egui::vec2(-165.0, 12.0),
+                    egui::vec2(152.0, 26.0),
+                );
+                if let Some(hover_pos) = resp.hover_pos() {
+                    if !(self.zen_hearth_mode && zen_pill.contains(hover_pos)) {
+                        if let Some(hovered_id) = find_nearest_organism(hover_pos) {
+                            if let Some(org) =
+                                self.world.organisms.iter().find(|o| o.id == hovered_id)
+                            {
+                                resp.clone().on_hover_text(format!(
+                                    "{} ({})\n{} • {:.1} kcal",
+                                    org.species.common_name(),
+                                    org.species.scientific_name(),
+                                    org.stratum().short_label(),
+                                    org.energy_kcal,
+                                ));
                             }
                         }
-                        self.selected_organism_id = best.map(|(id, _)| id);
                     }
                 }
 
                 if self.zen_hearth_mode {
-                    let pill = egui::Rect::from_min_size(
-                        rect.right_top() + egui::vec2(-165.0, 12.0),
-                        egui::vec2(152.0, 26.0),
-                    );
                     painter.rect_filled(
-                        pill,
+                        zen_pill,
                         13.0,
                         Color32::from_rgba_unmultiplied(12, 22, 24, 155),
                     );
                     painter.text(
-                        pill.center(),
+                        zen_pill.center(),
                         egui::Align2::CENTER_CENTER,
                         "Hearth Mode (Tab)",
                         egui::FontId::proportional(12.0),
@@ -1019,13 +1175,19 @@ impl TrophicHearthApp {
                     );
                     if resp.clicked() {
                         if let Some(p) = resp.interact_pointer_pos() {
-                            if pill.contains(p) {
+                            if zen_pill.contains(p) {
                                 self.zen_hearth_mode = false;
                             }
                         }
                     }
                 }
             });
+
+        if tab_toggled_hearth {
+            if let Some(fid) = ctx.memory(|m| m.focused()) {
+                ctx.memory_mut(|m| m.surrender_focus(fid));
+            }
+        }
     }
 }
 

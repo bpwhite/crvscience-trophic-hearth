@@ -17,17 +17,17 @@
 
 //! # TrophicHearth (`trophic-hearth` v0.9.3)
 //!
-//! Three-biome native safe-Rust 3D living trophic diorama and ambient "fireplace" simulator:
-//! - **Indo-Pacific Coral Reef** (*Carcharhinus melanopterus* blacktip reef shark, *Gymnothorax javanicus*
-//!   giant moray eel, *Pterois volitans* lionfish, *Taeniura lymma* bluespotted stingray,
-//!   *Amphiprion ocellaris* clownfish in host sea anemone, *Zanclus cornutus* Moorish idol,
-//!   *Chelonia mydas* green sea turtle, *Chlorurus* parrotfish bioerosion sand clouds, *Chromis viridis*
-//!   staghorn-hiding damselfish cloud, *Tridacna gigas* giant clam, *Lysmata* cleaner shrimp,
-//!   *Linckia* blue sea star, *Calcinus* hermit crabs, and GFP-biofluorescent *Acropora*/brain corals)
-//! - **Northeast Pacific Giant Kelp Forest** (*Enhydra lutris*, *Phoca vitulina*, *Triakis semifasciata*,
-//!   *Enteroctopus dofleini*, *Macrocystis*/*Nereocystis*)
-//! - **Neotropical Lowland Rainforest** (*Boa constrictor*, *Panthera onca*, *Saimiri*, *Bradypus*,
-//!   *Ara*, *Ramphastos*, *Tapirus*, *Dasyprocta*, *Morpho*, *Atta*, *Mycena*).
+//! Nine-biome native safe-Rust 3D living trophic diorama, fire-pit hearth, and bioacoustic ecosystem simulator
+//! spanning all nine [`trophic::BiomeKind`] ecosystems (`L0`–`L4` strata):
+//! - **NE Pacific Rocky Intertidal Tidepool & Surge Bench** (`RockyIntertidalTidepool` — semidiurnal tides, *Pisaster* ochre sea stars, *Mytilus* mussels, *Anthopleura* anemones, sculpins, *Postelsia*, black oystercatchers)
+//! - **Cold-Seep Brine Pool & Methane Ice Underwater Lake** (`ColdSeepBrinePool` — `1,050 m` hypersaline mirror lake, *Bathymodiolus* mussels, *Lamellibrachia* tubeworms, methane-ice worms, cutthroat eels)
+//! - **Midwater Pelagic Rift Canyon** (`MidwaterPelagicRift` — `200–1,500 m` twilight drop-off, diel vertical migration, sperm whales, giant/vampire squid, *Praya* siphonophores, lanternfish)
+//! - **PNW Old-Growth & Spawning Salmon Creek** (`PnwOldGrowthSalmonCreek` — spawning *Oncorhynchus kisutch* salmon, mycorrhizal nurse-log forest, spotted owls, dippers, banana slugs)
+//! - **Deep-Sea Hydrothermal Vent** (`DeepSeaHydrothermalVent` — `2,600 m` black smokers, chemosynthetic *Riftia* tubeworms, *Rimicaris* shrimp, yeti crabs, *Vulcanoctopus*, ghost sharks)
+//! - **Temperate Freshwater Lake** (`TemperateFreshwaterLake` — split-level waterline with northern pike, osprey, river otters, *Elodea*, crayfish, waterbirds)
+//! - **Indo-Pacific Shallow Fore-Reef & Lagoon** (`IndoPacificCoralReef` — blacktip reef sharks, giant morays, lionfish, green sea turtles, parrotfish, clownfish, *Acropora* corals)
+//! - **Northeast Pacific Giant Kelp Forest** (`PacificKelpForest` — *Enhydra lutris* sea otters, harbor seals, leopard sharks, giant Pacific octopus, *Macrocystis*/*Nereocystis* kelp)
+//! - **Neotropical Lowland Rainforest** (`NeotropicalRainforest` — jaguars/black panthers, *Boa constrictor*, squirrel monkeys, sloths, macaws, toucans, tapirs, leafcutter ants, *Mycena* fungi).
 
 pub mod app;
 pub mod audio;
