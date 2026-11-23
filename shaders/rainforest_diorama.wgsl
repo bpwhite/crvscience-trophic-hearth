@@ -73,8 +73,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let spec_strength = mix(0.06, 0.42, env.params.y);
     let spec = pow(max(dot(n, h), 0.0), shininess) * spec_strength * sun_int;
 
-    // Subtle rim light for jungle depth separation
-    let rim = pow(1.0 - max(dot(n, v), 0.0), 3.2) * 0.18 * env.sky_ambient.rgb;
+    // Subtle rim light for depth separation (clamped against unit-vector dot > 1.0 NaN in pow)
+    let rim = pow(clamp(1.0 - max(dot(n, v), 0.0), 0.0, 1.0), 3.2) * 0.18 * env.sky_ambient.rgb;
 
     // Nocturnal bioluminescence / eyeshine emission
     let biolum = in.base_color.rgb * in.material.y * (0.35 + 1.65 * env.params.z);

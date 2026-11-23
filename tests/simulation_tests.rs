@@ -19,7 +19,11 @@ use trophic_hearth::events::{SoundCue, SoundCueKind, StochasticEventKind};
 use trophic_hearth::models_3d::append_organism_geometry;
 use trophic_hearth::organisms::{BehaviorState, Species};
 use trophic_hearth::persistence::PersistenceStore;
-use trophic_hearth::trophic::{BiomeKind, TrophicStratum};
+use trophic_hearth::renderer::{
+    producer_flux_anchors, render_rainforest_viewport, surface_caustic_or_dapple, CameraPreset,
+    DioramaCamera,
+};
+use trophic_hearth::trophic::{BiomeKind, TrophicEnergyLedger, TrophicFocus, TrophicStratum};
 use trophic_hearth::world::RainforestWorld;
 
 #[test]
@@ -452,4 +456,487 @@ fn headless_gui_shortcuts_f1_escape_and_focus_guarded_space_tab_m() {
     assert!(app.show_about_window);
     run_frame(&mut app, Some(egui::Key::F1));
     assert!(!app.show_about_window);
+}
+
+#[test]
+fn cold_seep_brine_pool_reports_salinity_psu_and_excludes_removed_keystones_from_hitboxes() {
+    let mut bp = RainforestWorld::new_cold_seep_brine_pool(2026);
+    assert_eq!(BiomeKind::ColdSeepBrinePool.telemetry_unit(), " PSU");
+    let bp_atmo = bp.diurnal.atmosphere_for_biome(BiomeKind::ColdSeepBrinePool);
+    assert_eq!(bp_atmo.salinity_psu, Some(120.0));
+    assert_eq!(bp_atmo.hydro_unit, " PSU");
+    let summary = bp.diurnal.telemetry_summary(BiomeKind::ColdSeepBrinePool);
+    assert!(
+        summary.contains("120 PSU"),
+        "Brine pool telemetry must report salinity in PSU, got: {summary}"
+    );
+    assert!(
+        !summary.contains("% DO"),
+        "Brine pool telemetry must NOT report salinity as % DO, got: {summary}"
+    );
+
+    let reef_summary = bp.diurnal.telemetry_summary(BiomeKind::IndoPacificCoralReef);
+    assert!(reef_summary.contains("% DO"));
+    let rf_summary = bp.diurnal.telemetry_summary(BiomeKind::NeotropicalRainforest);
+    assert!(rf_summary.contains("% RH"));
+
+    // Verify hitboxes include keystones when intact and exclude them when removed across biomes
+    let ctx = egui::Context::default();
+    let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0));
+    let camera = DioramaCamera::default();
+
+    for biome in [
+        BiomeKind::RockyIntertidalTidepool,
+        BiomeKind::ColdSeepBrinePool,
+        BiomeKind::PacificKelpForest,
+    ] {
+        let mut world = RainforestWorld::new_for_biome(biome, 2026);
+        let keystone_ids: Vec<u32> = world
+            .organisms
+            .iter()
+            .filter(|o| o.species.is_keystone_species())
+            .map(|o| o.id)
+            .collect();
+        assert!(
+            !keystone_ids.is_empty(),
+            "Biome {biome:?} must spawn at least one keystone organism"
+        );
+
+        let mut intact_hits = Vec::new();
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(rect),
+                ..Default::default()
+            },
+            |c| {
+                egui::CentralPanel::default().show(c, |ui| {
+                    intact_hits = render_rainforest_viewport(ui.painter(), rect, &world, &camera, None);
+                });
+            },
+        );
+        assert!(
+            keystone_ids
+                .iter()
+                .any(|kid| intact_hits.iter().any(|(hid, _)| hid == kid)),
+            "Intact keystones in {biome:?} should appear in viewport hitboxes"
+        );
+
+        world.ledger.keystone_removed = true;
+        let mut removed_hits = Vec::new();
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(rect),
+                ..Default::default()
+            },
+            |c| {
+                egui::CentralPanel::default().show(c, |ui| {
+                    removed_hits =
+                        render_rainforest_viewport(ui.painter(), rect, &world, &camera, None);
+                });
+            },
+        );
+        for kid in &keystone_ids {
+            assert!(
+                !removed_hits.iter().any(|(hid, _)| hid == kid),
+                "Removed keystone id {kid} in {biome:?} must be excluded from hitboxes"
+            );
+        }
+        assert!(
+            !removed_hits.is_empty(),
+            "Non-keystone organisms in {biome:?} must remain selectable in hitboxes"
+        );
+    }
+
+    // Pressing K to remove a currently selected keystone clears selected_organism_id
+    bp.ledger.keystone_removed = false;
+    let bp_keystone_id = bp
+        .organisms
+        .iter()
+        .find(|o| o.species.is_keystone_species())
+        .map(|o| o.id)
+        .expect("Brine pool has keystone");
+    let mut app = TrophicHearthApp::new_headless(bp, false);
+    app.selected_organism_id = Some(bp_keystone_id);
+    let _ = ctx.run(
+        egui::RawInput {
+            screen_rect: Some(rect),
+            events: vec![egui::Event::Key {
+                key: egui::Key::K,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            ..Default::default()
+        },
+        |c| app.ui_step(c, false),
+    );
+    assert!(app.world.ledger.keystone_removed);
+    assert_eq!(app.selected_organism_id, None);
+}
+
+#[test]
+fn coupled_trophic_odes_conserve_energy_and_deplete_producers_under_grazing() {
+    // 1. Standalone ODE First-Law accounting: GPP -> d(Biomass + Detritus) + Sum(Respiration)
+    for biome in BiomeKind::ALL {
+        for &keystone_removed in &[false, true] {
+            let mut ledger = match biome {
+                BiomeKind::RockyIntertidalTidepool => TrophicEnergyLedger::new_tidepool_baseline(),
+                BiomeKind::ColdSeepBrinePool => TrophicEnergyLedger::new_brine_pool_baseline(),
+                BiomeKind::MidwaterPelagicRift => TrophicEnergyLedger::new_pelagic_rift_baseline(),
+                BiomeKind::PnwOldGrowthSalmonCreek => TrophicEnergyLedger::new_pnw_old_growth_baseline(),
+                BiomeKind::DeepSeaHydrothermalVent => TrophicEnergyLedger::new_hydrothermal_vent_baseline(),
+                BiomeKind::TemperateFreshwaterLake => TrophicEnergyLedger::new_freshwater_lake_baseline(),
+                BiomeKind::IndoPacificCoralReef => TrophicEnergyLedger::new_coral_reef_baseline(),
+                BiomeKind::PacificKelpForest => TrophicEnergyLedger::new_kelp_forest_baseline(),
+                BiomeKind::NeotropicalRainforest => TrophicEnergyLedger::new_rainforest_baseline(),
+            };
+            ledger.keystone_removed = keystone_removed;
+            let e_initial = ledger.total_system_energy_kcal();
+
+            for _ in 0..160 {
+                ledger.step_keystone_cascade(biome, 0.05);
+            }
+
+            let e_final = ledger.total_system_energy_kcal();
+            let delta_storage = e_final - e_initial - ledger.external_detritus_kcal;
+            let resp_total: f32 = ledger.respiration_kcal.iter().sum();
+            let net_inflow = ledger.cumulative_gpp_kcal - resp_total;
+            assert!(
+                (delta_storage - net_inflow).abs() < 0.5,
+                "First-law mismatch in {biome:?} (keystone_removed={keystone_removed}): delta_storage={delta_storage:.3}, net_inflow={net_inflow:.3}"
+            );
+            for stratum in TrophicStratum::ALL {
+                let i = stratum.index();
+                assert!(
+                    ledger.assimilation_kcal[i] > 0.0 && ledger.respiration_kcal[i] > 0.0,
+                    "Stratum {stratum:?} in {biome:?} must accumulate assimilation & respiration"
+                );
+            }
+            let te2 = ledger.transfer_efficiency_pct(TrophicStratum::PrimaryConsumers);
+            let te3 = ledger.transfer_efficiency_pct(TrophicStratum::SecondaryConsumers);
+            if !keystone_removed {
+                assert!(
+                    (4.5..=30.0).contains(&te2) && (4.5..=30.0).contains(&te3),
+                    "Baseline Lindeman efficiencies out of expected ecological band in {biome:?}: L2={te2:.2}%, L3={te3:.2}%"
+                );
+            } else {
+                assert!(
+                    (0.0..=60.0).contains(&te2) && (0.0..=60.0).contains(&te3),
+                    "Cascade Lindeman efficiencies out of bounds in {biome:?}: L2={te2:.2}%, L3={te3:.2}%"
+                );
+            }
+        }
+    }
+
+    // 2. Full RainforestWorld integration conserves energy & depletes L1 producers below the old 3800 clamp
+    let mut kelp = RainforestWorld::new_pacific_kelp_forest(2026);
+    let kelp_e0 = kelp.ledger.total_system_energy_kcal();
+    let kelp_l1_start = kelp.ledger.biomass_kcal[1];
+    kelp.ledger.keystone_removed = true; // Remove Sea Otters -> Urchin grazing barren!
+    for _ in 0..240 {
+        kelp.step(0.05);
+        kelp.pending_sounds.clear();
+    }
+    let kelp_delta =
+        kelp.ledger.total_system_energy_kcal() - kelp_e0 - kelp.ledger.external_detritus_kcal;
+    let kelp_net = kelp.ledger.cumulative_gpp_kcal - kelp.ledger.respiration_kcal.iter().sum::<f32>();
+    assert!(
+        (kelp_delta - kelp_net).abs() < 1.0,
+        "Full Kelp world conservation error: delta={kelp_delta:.3}, net={kelp_net:.3}"
+    );
+    assert!(
+        kelp.ledger.biomass_kcal[1] < 3800.0 && kelp.ledger.biomass_kcal[1] < kelp_l1_start * 0.72,
+        "Kelp L1 producers must deplete cleanly below the old 3800 clamp under urchin grazing (got {:.1})",
+        kelp.ledger.biomass_kcal[1]
+    );
+
+    // 3. Direct grazing perturbation in Tidepool depletes producers below 3800 kcal cleanly
+    let mut tp = RainforestWorld::new_rocky_intertidal_tidepool(2026);
+    tp.ledger.biomass_kcal[2] *= 2.5; // Direct grazer density surge
+    for _ in 0..120 {
+        tp.step(0.05);
+    }
+    assert!(
+        tp.ledger.biomass_kcal[1] < 3800.0,
+        "Producer biomass must respond cleanly to direct grazing below 3800 kcal (got {:.1})",
+        tp.ledger.biomass_kcal[1]
+    );
+}
+
+#[test]
+fn headless_gui_new_hotkeys_smooth_camera_and_hover_guarded_scroll() {
+    let ctx = egui::Context::default();
+    let world = RainforestWorld::new_for_biome(BiomeKind::RockyIntertidalTidepool, 2026);
+    let mut app = TrophicHearthApp::new_headless(world, false);
+    app.show_inspector_drawer = true;
+
+    let run_events = |app: &mut TrophicHearthApp,
+                      events: Vec<egui::Event>,
+                      t_sec: f64| {
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1360.0, 820.0),
+            )),
+            time: Some(t_sec),
+            predicted_dt: 1.0 / 60.0,
+            events,
+            ..Default::default()
+        };
+        let _ = ctx.run(raw, |c| app.ui_step(c, false));
+    };
+
+    // Warmup
+    run_events(&mut app, vec![], 0.0);
+
+    // Hotkey '2' activates smooth preset transition (not an instant snap)
+    let dist_before = app.camera.distance_m;
+    run_events(
+        &mut app,
+        vec![egui::Event::Key {
+            key: egui::Key::Num2,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+        0.02,
+    );
+    assert_eq!(app.camera.preset, CameraPreset::UnderbrushStalkMacro);
+    assert!(app.camera.interpolating);
+    assert!(
+        (app.camera.distance_m - dist_before).abs() < (dist_before - 9.8).abs(),
+        "Preset 2 must interpolate smoothly rather than snapping immediately"
+    );
+    for step_i in 0..40 {
+        app.camera.step(0.03);
+        let _ = step_i;
+    }
+    assert!((app.camera.distance_m - 9.8).abs() < 0.05);
+
+    // Hotkeys '[' and ']' cycle biomes across all 9 ecosystems
+    assert_eq!(app.world.biome, BiomeKind::RockyIntertidalTidepool);
+    run_events(
+        &mut app,
+        vec![egui::Event::Key {
+            key: egui::Key::CloseBracket,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+        0.05,
+    );
+    assert_eq!(app.world.biome, BiomeKind::ColdSeepBrinePool);
+    run_events(
+        &mut app,
+        vec![egui::Event::Key {
+            key: egui::Key::OpenBracket,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+        0.07,
+    );
+    assert_eq!(app.world.biome, BiomeKind::RockyIntertidalTidepool);
+
+    // Shift+0..4 focuses L0..L4, and plain 0 returns to AllStrata without triggering camera preset
+    run_events(
+        &mut app,
+        vec![egui::Event::Key {
+            key: egui::Key::Num3,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::SHIFT,
+        }],
+        0.09,
+    );
+    assert_eq!(
+        app.world.focus,
+        TrophicFocus::Single(TrophicStratum::SecondaryConsumers)
+    );
+    assert_eq!(app.camera.preset, CameraPreset::SideDiorama);
+    run_events(
+        &mut app,
+        vec![egui::Event::Key {
+            key: egui::Key::Num0,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+        0.11,
+    );
+    assert_eq!(app.world.focus, TrophicFocus::AllStrata);
+
+    // 'F' toggles flux arcs
+    assert!(app.world.ledger.show_flux_arcs);
+    run_events(
+        &mut app,
+        vec![egui::Event::Key {
+            key: egui::Key::F,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+        0.13,
+    );
+    assert!(!app.world.ledger.show_flux_arcs);
+
+    // Focus slot_name_input -> K, F, [, ], 0..4 must all be blocked by wants_keyboard_input()
+    ctx.memory_mut(|m| m.request_focus(egui::Id::new("slot_name_input")));
+    run_events(&mut app, vec![], 0.15);
+    assert!(ctx.wants_keyboard_input());
+    run_events(
+        &mut app,
+        vec![
+            egui::Event::Key {
+                key: egui::Key::K,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::Key {
+                key: egui::Key::F,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::Key {
+                key: egui::Key::CloseBracket,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ],
+        0.17,
+    );
+    assert!(!app.world.ledger.keystone_removed);
+    assert!(!app.world.ledger.show_flux_arcs);
+    assert_eq!(app.world.biome, BiomeKind::RockyIntertidalTidepool);
+    ctx.memory_mut(|m| m.surrender_focus(egui::Id::new("slot_name_input")));
+    run_events(&mut app, vec![], 0.19);
+
+    // Scroll-zoom guard: hovering right inspector panel must NOT zoom camera
+    app.camera.snap_to_preset(CameraPreset::SideDiorama);
+    let cam_dist_start = app.camera.distance_m;
+    run_events(
+        &mut app,
+        vec![egui::Event::PointerMoved(egui::pos2(1240.0, 420.0))],
+        0.21,
+    );
+    run_events(
+        &mut app,
+        vec![
+            egui::Event::PointerMoved(egui::pos2(1240.0, 420.0)),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, 80.0),
+                modifiers: egui::Modifiers::NONE,
+            },
+        ],
+        0.23,
+    );
+    assert!(
+        (app.camera.distance_m - cam_dist_start).abs() < 1e-4,
+        "Scroll wheel over right inspector drawer must not zoom 3D viewport"
+    );
+
+    // Hovering 3D viewport center DOES zoom camera
+    run_events(
+        &mut app,
+        vec![egui::Event::PointerMoved(egui::pos2(450.0, 420.0))],
+        0.25,
+    );
+    run_events(
+        &mut app,
+        vec![
+            egui::Event::PointerMoved(egui::pos2(450.0, 420.0)),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, 120.0),
+                modifiers: egui::Modifiers::NONE,
+            },
+        ],
+        0.27,
+    );
+    assert!(
+        app.camera.distance_m < cam_dist_start - 0.1,
+        "Scroll wheel while hovering 3D viewport must zoom camera inward"
+    );
+}
+
+#[test]
+fn aphotic_biomes_gate_caustics_flux_arcs_anchor_producers_and_wgsl_validates() {
+    // 1. Aphotic hydrothermal vent & cold seep must have strictly 1.0 (zero solar caustics)
+    let mut cycle = trophic_hearth::trophic::DiurnalCycle::default();
+    cycle.hour_of_day = 12.0; // Solar noon
+    for aphotic in [
+        BiomeKind::DeepSeaHydrothermalVent,
+        BiomeKind::ColdSeepBrinePool,
+    ] {
+        let atmo = cycle.atmosphere_for_biome(aphotic);
+        assert_eq!(atmo.par_umol_m2_s, 0.0);
+        for x in [-6.0_f32, 0.0, 4.5] {
+            for z in [-3.0_f32, 0.5] {
+                let f = surface_caustic_or_dapple(
+                    aphotic,
+                    &atmo,
+                    glam::Vec3::new(x, 2.0, z),
+                    1.25,
+                );
+                assert_eq!(
+                    f, 1.0,
+                    "Aphotic biome {aphotic:?} must not emit sunlight caustics (got {f})"
+                );
+            }
+        }
+    }
+    // Sunlit shallow reef at noon should modulate caustics
+    let reef_atmo = cycle.atmosphere_for_biome(BiomeKind::IndoPacificCoralReef);
+    assert!(reef_atmo.par_umol_m2_s > 1000.0);
+    let c_a = surface_caustic_or_dapple(
+        BiomeKind::IndoPacificCoralReef,
+        &reef_atmo,
+        glam::Vec3::new(1.5, 2.0, 0.5),
+        1.25,
+    );
+    let c_b = surface_caustic_or_dapple(
+        BiomeKind::IndoPacificCoralReef,
+        &reef_atmo,
+        glam::Vec3::new(-2.2, 2.0, -1.5),
+        2.75,
+    );
+    assert!((c_a - c_b).abs() > 0.01);
+
+    // 2. All 9 biomes provide valid L1 producer flux-arc anchors (trees/kelp/underbrush)
+    for biome in BiomeKind::ALL {
+        let world = RainforestWorld::new_for_biome(biome, 2026);
+        let anchors = producer_flux_anchors(&world, 1.0);
+        assert!(
+            anchors.len() >= 4,
+            "Biome {biome:?} should yield >= 4 L1 producer flux anchors (got {})",
+            anchors.len()
+        );
+        assert!(anchors.iter().all(|p| p.is_finite()));
+    }
+
+    // 3. WGSL diorama shader parses and validates cleanly with wgpu::naga
+    let wgsl_src = include_str!("../shaders/rainforest_diorama.wgsl");
+    let module = wgpu::naga::front::wgsl::parse_str(wgsl_src)
+        .expect("rainforest_diorama.wgsl must parse cleanly");
+    let mut validator = wgpu::naga::valid::Validator::new(
+        wgpu::naga::valid::ValidationFlags::all(),
+        wgpu::naga::valid::Capabilities::default(),
+    );
+    validator
+        .validate(&module)
+        .expect("rainforest_diorama.wgsl must pass naga validation");
 }

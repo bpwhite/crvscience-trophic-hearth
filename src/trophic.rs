@@ -115,6 +115,66 @@ impl BiomeKind {
                 | Self::ColdSeepBrinePool
         )
     }
+
+    /// Canonical telemetry unit for the biome's primary water/air/salinity readout.
+    pub fn telemetry_unit(self) -> &'static str {
+        match self {
+            Self::ColdSeepBrinePool => " PSU",
+            b if b.is_aquatic() => "% DO",
+            _ => "% RH",
+        }
+    }
+
+    /// Concise ecological tooltip displayed when hovering biome tabs or inspecting the F1 reference.
+    pub fn hover_tooltip(self) -> &'static str {
+        match self {
+            Self::RockyIntertidalTidepool => {
+                "NE Pacific Rocky Intertidal Tidepool (0 m, Solar PAR & Semidiurnal Tides)\n\
+                 L1: Postelsia sea palms & coralline turf | L2: Mytilus mussels & barnacles\n\
+                 Keystone: Pisaster ochraceus ochre sea stars (Paine 1966 cascade)"
+            }
+            Self::ColdSeepBrinePool => {
+                "Cold-Seep Brine Pool & Methane Ice (1,050 m Aphotic, 120 PSU Brine, PAR = 0)\n\
+                 Energy: Methanotrophic & thiotrophic chemosynthesis (CH4 / H2S)\n\
+                 Keystone: Bathymodiolus mussels & 250-yr Lamellibrachia tubeworms"
+            }
+            Self::MidwaterPelagicRift => {
+                "Midwater Pelagic Rift Canyon (200-1,500 m, 475 nm Twilight & DVM)\n\
+                 Energy: Epipelagic phytodetritus marine snow & Deep Scattering Layer\n\
+                 Keystone: Echolocating sperm whales & Architeuthis giant squid"
+            }
+            Self::PnwOldGrowthSalmonCreek => {
+                "PNW Old-Growth & Spawning Salmon Creek (Temperate Rainforest & Riffles)\n\
+                 Energy: Solar PAR + marine-derived 15N salmon nutrient subsidy\n\
+                 Keystone: Spawning Coho salmon & Northern Spotted Owls"
+            }
+            Self::DeepSeaHydrothermalVent => {
+                "Deep-Sea Hydrothermal Vent (2,600 m Abyssal Black Smokers, PAR = 0)\n\
+                 Energy: 100% H2S/Fe2+ lithoautotrophic chemosynthesis (Riftia & Beggiatoa)\n\
+                 Keystone: Abyssal ghost sharks & Vulcanoctopus vent predators"
+            }
+            Self::TemperateFreshwaterLake => {
+                "Temperate Freshwater Lake (Split-Level Littoral & Pelagic Zone)\n\
+                 Energy: Solar PAR macrophytes (eelgrass, lilies, cattails) + leaf packs\n\
+                 Keystone: Northern pike & plunging osprey apex piscivores"
+            }
+            Self::IndoPacificCoralReef => {
+                "Indo-Pacific Fore-Reef & Lagoon (Shallow Oligotrophic Tropical Reef)\n\
+                 Energy: Zooxanthellate coral holobiont photosynthesis (Darwin's Paradox)\n\
+                 Keystone: Blacktip reef sharks & grazing steephead parrotfish"
+            }
+            Self::PacificKelpForest => {
+                "Northeast Pacific Giant Kelp Forest (Cold Upwelling Macrocystis Reef)\n\
+                 Energy: Solar PAR bull & giant kelp canopy (upwelling NO3/PO4)\n\
+                 Keystone: Enhydra lutris sea otters suppressing purple sea urchin barrens"
+            }
+            Self::NeotropicalRainforest => {
+                "Neotropical Lowland Rainforest (Multi-Tier Emerald Canopy & Soil)\n\
+                 Energy: High solar PAR canopy sunflecks + leafcutter ant detritus loop\n\
+                 Keystone: Canopy jaguars & melanistic black panthers"
+            }
+        }
+    }
 }
 
 /// Five canonical ecological strata across terrestrial and marine dioramas.
@@ -282,10 +342,32 @@ pub struct DiurnalAtmosphere {
     pub night_factor: f32,
     pub air_temp_c: f32,
     pub relative_humidity_pct: f32,
+    pub hydro_unit: &'static str,
+    pub salinity_psu: Option<f32>,
     pub phase_name: &'static str,
 }
 
 impl DiurnalCycle {
+    /// Formats the canonical top-bar ecological telemetry readout for `biome`
+    /// (reporting brine salinity in `PSU`, aquatic oxygen in `% DO`, and air humidity in `% RH`).
+    pub fn telemetry_summary(&self, biome: BiomeKind) -> String {
+        let atmo = self.atmosphere_for_biome(biome);
+        let h = self.hour_of_day.floor() as u32 % 24;
+        let m = ((self.hour_of_day.fract() * 60.0) as u32).min(59);
+        let hydro_val = atmo.salinity_psu.unwrap_or(atmo.relative_humidity_pct);
+        format!(
+            "Day {} {:02}:{:02} ({}) | {:.1} degC | {:.0}{} | PAR {:.0} umol",
+            self.day_count,
+            h,
+            m,
+            atmo.phase_name,
+            atmo.air_temp_c,
+            hydro_val,
+            atmo.hydro_unit,
+            atmo.par_umol_m2_s,
+        )
+    }
+
     pub fn step(&mut self, dt_sec: f32) {
         let delta_hours = (dt_sec * self.minutes_per_real_sec) / 60.0;
         self.hour_of_day += delta_hours;
@@ -374,6 +456,8 @@ impl DiurnalCycle {
                     night_factor,
                     air_temp_c: 12.8 + 3.2 * day_t - 1.1 * self.rain_intensity,
                     relative_humidity_pct: 88.0 + 8.0 * self.rain_intensity,
+                    hydro_unit: biome.telemetry_unit(),
+                    salinity_psu: None,
                     phase_name,
                 }
             }
@@ -399,7 +483,9 @@ impl DiurnalCycle {
                     par_umol_m2_s: 0.0,
                     night_factor: 1.0,
                     air_temp_c: 4.1 + 0.2 * tide_wave,
-                    relative_humidity_pct: 120.0, // Brine salinity ~120 PSU!
+                    relative_humidity_pct: 120.0, // Hypersaline brine ~120 PSU
+                    hydro_unit: biome.telemetry_unit(),
+                    salinity_psu: Some(120.0),
                     phase_name,
                 }
             }
@@ -443,6 +529,8 @@ impl DiurnalCycle {
                     night_factor,
                     air_temp_c: water_temp_c,
                     relative_humidity_pct: 100.0,
+                    hydro_unit: biome.telemetry_unit(),
+                    salinity_psu: None,
                     phase_name,
                 }
             }
@@ -492,6 +580,8 @@ impl DiurnalCycle {
                     night_factor,
                     air_temp_c,
                     relative_humidity_pct: rh_pct,
+                    hydro_unit: biome.telemetry_unit(),
+                    salinity_psu: None,
                     phase_name,
                 }
             }
@@ -529,6 +619,8 @@ impl DiurnalCycle {
                     night_factor: 1.0,  // Continuous abyssal bioluminescence!
                     air_temp_c: ambient_temp_c,
                     relative_humidity_pct: dissolved_o2_pct,
+                    hydro_unit: biome.telemetry_unit(),
+                    salinity_psu: None,
                     phase_name,
                 }
             }
@@ -579,6 +671,8 @@ impl DiurnalCycle {
                     night_factor,
                     air_temp_c: water_temp_c,
                     relative_humidity_pct: dissolved_o2_pct,
+                    hydro_unit: biome.telemetry_unit(),
+                    salinity_psu: None,
                     phase_name,
                 }
             }
@@ -628,6 +722,8 @@ impl DiurnalCycle {
                     night_factor,
                     air_temp_c: water_temp_c,
                     relative_humidity_pct: dissolved_o2_pct,
+                    hydro_unit: biome.telemetry_unit(),
+                    salinity_psu: None,
                     phase_name,
                 }
             }
@@ -677,6 +773,8 @@ impl DiurnalCycle {
                     night_factor,
                     air_temp_c: water_temp_c,
                     relative_humidity_pct: dissolved_o2_pct,
+                    hydro_unit: biome.telemetry_unit(),
+                    salinity_psu: None,
                     phase_name,
                 }
             }
@@ -751,6 +849,8 @@ impl DiurnalCycle {
                     night_factor,
                     air_temp_c,
                     relative_humidity_pct,
+                    hydro_unit: biome.telemetry_unit(),
+                    salinity_psu: None,
                     phase_name,
                 }
             }
@@ -775,6 +875,12 @@ pub struct TrophicEnergyLedger {
     pub biomass_history: Vec<[f32; 5]>,
     #[serde(default)]
     pub history_sample_accum: f32,
+    #[serde(default)]
+    pub external_detritus_kcal: f32,
+    #[serde(default)]
+    pub last_assim_rate_kcal_s: [f32; 5],
+    #[serde(default)]
+    pub last_resp_rate_kcal_s: [f32; 5],
 }
 
 fn default_flux_arcs_on() -> bool {
@@ -795,54 +901,472 @@ impl Default for TrophicEnergyLedger {
             show_flux_arcs: true,
             biomass_history: Vec::new(),
             history_sample_accum: 0.0,
+            external_detritus_kcal: 0.0,
+            last_assim_rate_kcal_s: [0.0; 5],
+            last_resp_rate_kcal_s: [0.0; 5],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TrophicWebParams {
+    base: [f32; 5],
+    gpp_star: f32,
+    r1_growth_frac: f32,
+    m1: f32,
+    d1: f32,
+    alpha: [f32; 5],
+    c_12: f32,
+    h_12: f32,
+    m2: f32,
+    r2_sda: f32,
+    d2: f32,
+    c_23: f32,
+    h_23: f32,
+    c_24: f32,
+    h_24: f32,
+    c_03: f32,
+    h_03: f32,
+    m3: f32,
+    r3_sda: f32,
+    d3: f32,
+    c_34: f32,
+    h_34: f32,
+    m4: f32,
+    r4_sda: f32,
+    d4: f32,
+    q4: f32,
+    c_d0: f32,
+    h_d0: f32,
+    m0: f32,
+    r0_sda: f32,
+    d0: f32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TrophicFluxSample {
+    gpp_eff: f32,
+    assim: [f32; 5],
+    resp: [f32; 5],
+    db: [f32; 5],
+    dd_kcal: f32,
+}
+
+impl TrophicWebParams {
+    fn for_biome(biome: BiomeKind) -> Self {
+        let base = TrophicEnergyLedger::baseline_for_biome(biome);
+        let detritus_base_kcal =
+            TrophicEnergyLedger::baseline_detritus_g(biome) * TrophicEnergyLedger::KCAL_PER_G_DETRITUS;
+        let [b0, b1, b2, b3, b4] = base;
+
+        // Primary production & producer respiration/senescence
+        let gpp_rate_factor = match biome {
+            BiomeKind::IndoPacificCoralReef
+            | BiomeKind::RockyIntertidalTidepool
+            | BiomeKind::PacificKelpForest => 0.17,
+            BiomeKind::DeepSeaHydrothermalVent
+            | BiomeKind::ColdSeepBrinePool
+            | BiomeKind::TemperateFreshwaterLake
+            | BiomeKind::MidwaterPelagicRift => 0.16,
+            BiomeKind::NeotropicalRainforest | BiomeKind::PnwOldGrowthSalmonCreek => 0.145,
+        };
+        let gpp_star = gpp_rate_factor * b1;
+        let r1_growth_frac = 0.40;
+        let r1_star = 0.46 * gpp_star;
+        let m1 = (r1_star - r1_growth_frac * gpp_star).max(0.0) / b1;
+        let npp_star = gpp_star - r1_star;
+        let s1_star = 0.14 * npp_star;
+        let d1 = s1_star / b1;
+
+        // L1 -> L2 grazing (Holling Type II)
+        let f12_star = npp_star - s1_star;
+        let h_12 = 0.65 * b1;
+        let c_12 = (1.65 * f12_star) / b2;
+
+        // L2 assimilation, respiration, mortality & predation split
+        let alpha2 = 0.54;
+        let a2_star = alpha2 * f12_star;
+        let r2_sda = 0.34;
+        let r2_star = 0.64 * a2_star;
+        let m2 = (r2_star - r2_sda * a2_star).max(0.0) / b2;
+        let p2_star = a2_star - r2_star;
+        let d2 = (0.12 * p2_star) / b2;
+
+        let (apex_direct_frac, meso_frac) = match biome {
+            BiomeKind::RockyIntertidalTidepool => (0.68, 0.20),
+            BiomeKind::PacificKelpForest => (0.16, 0.72),
+            BiomeKind::MidwaterPelagicRift => (0.14, 0.74),
+            BiomeKind::ColdSeepBrinePool => (0.26, 0.62),
+            BiomeKind::TemperateFreshwaterLake => (0.34, 0.54),
+            BiomeKind::NeotropicalRainforest => (0.32, 0.56),
+            BiomeKind::PnwOldGrowthSalmonCreek
+            | BiomeKind::DeepSeaHydrothermalVent
+            | BiomeKind::IndoPacificCoralReef => (0.28, 0.60),
+        };
+        let f23_star = meso_frac * p2_star;
+        let f24_star = apex_direct_frac * p2_star;
+        let h_23 = 0.70 * b2;
+        let h_24 = 0.70 * b2;
+        let c_23 = (1.70 * f23_star) / b3;
+        let c_24 = (1.70 * f24_star) / b4;
+
+        // L3 secondary consumers (plus modest benthic/detritivore L0->L3 link)
+        let f03_star = 0.18 * f23_star;
+        let h_03 = 0.75 * b0;
+        let c_03 = (1.75 * f03_star) / b3;
+        let alpha3 = 0.72;
+        let a3_star = alpha3 * (f23_star + f03_star);
+        let r3_sda = 0.40;
+        let r3_star = 0.70 * a3_star;
+        let m3 = (r3_star - r3_sda * a3_star).max(0.0) / b3;
+        let p3_star = a3_star - r3_star;
+        let d3 = (0.16 * p3_star) / b3;
+        let f34_star = 0.84 * p3_star;
+        let h_34 = 0.70 * b3;
+        let c_34 = (1.70 * f34_star) / b4;
+
+        // L4 apex predators (Holling II intake + logistic territorial mortality -> detritus)
+        let alpha4 = 0.78;
+        let a4_star = alpha4 * (f24_star + f34_star);
+        let r4_sda = 0.44;
+        let r4_star = 0.75 * a4_star;
+        let m4 = (r4_star - r4_sda * a4_star).max(0.0) / b4;
+        let p4_star = a4_star - r4_star;
+        let d4 = (0.45 * p4_star) / b4;
+        let q4 = (0.55 * p4_star) / (b4 * b4);
+
+        // L0 decomposers & detritus recycling closed to exact steady state
+        let r0_star = (gpp_star - r1_star - r2_star - r3_star - r4_star).max(1.0);
+        let mort0_star = 0.18 * r0_star;
+        let d0 = mort0_star / b0;
+        let a0_star = r0_star + mort0_star + f03_star;
+        let alpha0 = 0.65;
+        let fd0_star = a0_star / alpha0;
+        let h_d0 = 0.65 * detritus_base_kcal;
+        let c_d0 = (1.65 * fd0_star) / b0;
+        let r0_sda = 0.60 * (r0_star / a0_star);
+        let m0 = (0.40 * r0_star) / b0;
+
+        Self {
+            base,
+            gpp_star,
+            r1_growth_frac,
+            m1,
+            d1,
+            alpha: [alpha0, 1.0, alpha2, alpha3, alpha4],
+            c_12,
+            h_12,
+            m2,
+            r2_sda,
+            d2,
+            c_23,
+            h_23,
+            c_24,
+            h_24,
+            c_03,
+            h_03,
+            m3,
+            r3_sda,
+            d3,
+            c_34,
+            h_34,
+            m4,
+            r4_sda,
+            d4,
+            q4,
+            c_d0,
+            h_d0,
+            m0,
+            r0_sda,
+            d0,
+        }
+    }
+
+    fn eval_fluxes(
+        &self,
+        biome: BiomeKind,
+        b: [f32; 5],
+        d_kcal: f32,
+        gpp_rate_in: f32,
+        activity_drive: f32,
+        keystone_removed: bool,
+        h_step: f32,
+    ) -> TrophicFluxSample {
+        let act = activity_drive.clamp(0.04, 1.4);
+        let b0 = b[0].max(0.0);
+        let b1 = b[1].max(0.0);
+        let b2 = b[2].max(0.0);
+        let b3 = b[3].max(0.0);
+        let b4 = b[4].max(0.0);
+        let d = d_kcal.max(0.0);
+
+        // Keystone guild mechanistic modulations (consumptive & trait-mediated release / facilitation loss)
+        let (
+            gpp_facil,
+            c12_mult,
+            c23_mult,
+            c24_mult,
+            c34_mult,
+            extra_m2,
+            extra_m3,
+            extra_m4,
+        ) = if !keystone_removed {
+            (1.0_f32, 1.0_f32, 1.0_f32, 1.0_f32, 1.0_f32, 0.0_f32, 0.0_f32, 0.0_f32)
+        } else {
+            match biome {
+                // Paine (1966): Pisaster (L4) removal removes direct mussel predation & triggers Mytilus bed dominance
+                BiomeKind::RockyIntertidalTidepool => (0.94, 1.65, 0.68, 0.14, 0.14, 0.0, 0.055, 0.36),
+                // Estes & Palmisano (1974): Sea otter (L3) removal releases sea urchins (L2) to overgraze Macrocystis kelp
+                BiomeKind::PacificKelpForest => (0.94, 1.72, 0.18, 0.65, 0.65, 0.0, 0.34, 0.06),
+                // Biogenic Bathymodiolus & Lamellibrachia cold-seep foundation engineering removed
+                BiomeKind::ColdSeepBrinePool => (0.64, 0.72, 0.92, 0.92, 0.92, 0.10, 0.03, 0.03),
+                // Spawning Coho salmon & Spotted Owls removed: marine 15N subsidy and apex control drop
+                BiomeKind::PnwOldGrowthSalmonCreek => (0.72, 0.58, 0.95, 0.25, 0.25, 0.26, 0.05, 0.30),
+                // Diving sperm whales (L4) removed -> mesopredator squid release suppresses DVM lanternfish/krill
+                BiomeKind::MidwaterPelagicRift => (0.96, 1.02, 1.38, 0.18, 0.18, 0.0, 0.0, 0.36),
+                // Apex predator removal across Reef, Lake, Vent, Rainforest releases herbivore/grazer foraging
+                BiomeKind::IndoPacificCoralReef
+                | BiomeKind::TemperateFreshwaterLake
+                | BiomeKind::DeepSeaHydrothermalVent
+                | BiomeKind::NeotropicalRainforest => (0.96, 1.52, 0.85, 0.18, 0.18, 0.0, 0.02, 0.36),
+            }
+        };
+
+        // Light/nutrient-driven GPP with smooth self-shading carrying-capacity regulation (no hard clamp)
+        let shading_crowding = (1.55 - 0.55 * (b1 / self.base[1].max(1.0))).clamp(0.15, 1.55);
+        let gpp_eff = (gpp_rate_in * shading_crowding * gpp_facil).max(0.0);
+
+        // Holling Type II trophic interactions
+        let sat12 = b1 / (self.h_12 + b1 + 1e-6);
+        let sat23 = b2 / (self.h_23 + b2 + 1e-6);
+        let sat24 = b2 / (self.h_24 + b2 + 1e-6);
+        let sat34 = b3 / (self.h_34 + b3 + 1e-6);
+        let sat03 = b0 / (self.h_03 + b0 + 1e-6);
+        let satd0 = d / (self.h_d0 + d + 1e-6);
+
+        let mut f_12 = act * self.c_12 * c12_mult * b2 * sat12;
+        let mut f_23 = act * self.c_23 * c23_mult * b3 * sat23;
+        let mut f_24 = act * self.c_24 * c24_mult * b4 * sat24;
+        let mut f_34 = act * self.c_34 * c34_mult * b4 * sat34;
+        let mut f_03 = act * self.c_03 * b3 * sat03;
+        let mut f_d0 = act * self.c_d0 * b0 * satd0;
+
+        // Basal maintenance respiration + non-predatory senescence/mortality
+        let mut r1_base = act * self.m1 * b1;
+        let mut mort1 = act * self.d1 * b1;
+
+        let mut r2_base = act * self.m2 * b2;
+        let mut mort2 = act * (self.d2 + extra_m2) * b2;
+
+        let mut r3_base = act * self.m3 * b3;
+        let mut mort3 = act * (self.d3 + extra_m3) * b3;
+
+        let mut r4_base = act * self.m4 * b4;
+        let mut mort4 = act * (self.d4 + extra_m4 + self.q4 * b4) * b4;
+
+        let mut r0_base = act * self.m0 * b0;
+        let mut mort0 = act * self.d0 * b0;
+
+        // Proportional flux capping so no compartment ever goes negative while keeping conservation exact
+        let dt_safe = h_step.max(1e-4);
+        let cap_pool = |avail: f32, out_total: f32| -> f32 {
+            let max_rate = (avail * 0.85) / dt_safe;
+            if out_total > max_rate && out_total > 1e-6 {
+                max_rate / out_total
+            } else {
+                1.0
+            }
+        };
+
+        let s0 = cap_pool(b0, r0_base + mort0 + f_03);
+        r0_base *= s0;
+        mort0 *= s0;
+        f_03 *= s0;
+
+        let s1 = cap_pool(b1 + gpp_eff * dt_safe, r1_base + mort1 + f_12);
+        r1_base *= s1;
+        mort1 *= s1;
+        f_12 *= s1;
+
+        let s2 = cap_pool(b2, r2_base + mort2 + f_23 + f_24);
+        r2_base *= s2;
+        mort2 *= s2;
+        f_23 *= s2;
+        f_24 *= s2;
+
+        let s3 = cap_pool(b3, r3_base + mort3 + f_34);
+        r3_base *= s3;
+        mort3 *= s3;
+        f_34 *= s3;
+
+        let s4 = cap_pool(b4, r4_base + mort4);
+        r4_base *= s4;
+        mort4 *= s4;
+
+        let a0_raw = self.alpha[0] * f_d0;
+        let sd = cap_pool(d, a0_raw);
+        f_d0 *= sd;
+
+        // Assimilation, SDA respiration, and egestion into detritus
+        let a0 = self.alpha[0] * f_d0;
+        let a1 = gpp_eff;
+        let a2 = self.alpha[2] * f_12;
+        let a3 = self.alpha[3] * (f_23 + f_03);
+        let a4 = self.alpha[4] * (f_24 + f_34);
+
+        let r0 = r0_base + self.r0_sda * a0;
+        let r1 = r1_base + self.r1_growth_frac * gpp_eff;
+        let r2 = r2_base + self.r2_sda * a2;
+        let r3 = r3_base + self.r3_sda * a3;
+        let r4 = r4_base + self.r4_sda * a4;
+
+        let egest_2 = (1.0 - self.alpha[2]) * f_12;
+        let egest_3 = (1.0 - self.alpha[3]) * (f_23 + f_03);
+        let egest_4 = (1.0 - self.alpha[4]) * (f_24 + f_34);
+
+        let db = [
+            a0 - r0 - mort0 - f_03,
+            a1 - r1 - mort1 - f_12,
+            a2 - r2 - mort2 - f_23 - f_24,
+            a3 - r3 - mort3 - f_34,
+            a4 - r4 - mort4,
+        ];
+        let dd_kcal = (mort0 + mort1 + mort2 + mort3 + mort4) + (egest_2 + egest_3 + egest_4) - a0;
+
+        TrophicFluxSample {
+            gpp_eff,
+            assim: [a0, a1, a2, a3, a4],
+            resp: [r0, r1, r2, r3, r4],
+            db,
+            dd_kcal,
         }
     }
 }
 
 impl TrophicEnergyLedger {
+    /// Energy density of ash-free organic detritus (kcal per gram dry mass).
+    pub const KCAL_PER_G_DETRITUS: f32 = 4.5;
+
+    pub fn baseline_detritus_g(biome: BiomeKind) -> f32 {
+        match biome {
+            BiomeKind::RockyIntertidalTidepool => 176.0,
+            BiomeKind::ColdSeepBrinePool => 285.0,
+            BiomeKind::MidwaterPelagicRift => 310.0,
+            BiomeKind::PnwOldGrowthSalmonCreek => 245.0,
+            BiomeKind::DeepSeaHydrothermalVent => 230.0,
+            BiomeKind::TemperateFreshwaterLake => 168.0,
+            BiomeKind::IndoPacificCoralReef => 112.0,
+            BiomeKind::PacificKelpForest => 195.0,
+            BiomeKind::NeotropicalRainforest => 145.0,
+        }
+    }
+
+    pub fn baseline_mineral_mg(biome: BiomeKind) -> f32 {
+        match biome {
+            BiomeKind::RockyIntertidalTidepool => 142.0,
+            BiomeKind::ColdSeepBrinePool => 248.0,
+            BiomeKind::MidwaterPelagicRift => 188.0,
+            BiomeKind::PnwOldGrowthSalmonCreek => 164.0,
+            BiomeKind::DeepSeaHydrothermalVent => 215.0,
+            BiomeKind::TemperateFreshwaterLake => 86.0,
+            BiomeKind::IndoPacificCoralReef => 64.0,
+            BiomeKind::PacificKelpForest => 148.0,
+            BiomeKind::NeotropicalRainforest => 92.0,
+        }
+    }
+
+    pub fn detritus_kcal(&self) -> f32 {
+        self.detritus_pool_g * Self::KCAL_PER_G_DETRITUS
+    }
+
+    pub fn total_system_energy_kcal(&self) -> f32 {
+        self.biomass_kcal.iter().sum::<f32>() + self.detritus_kcal()
+    }
+
+    /// Deposits non-ODE detritus (e.g. falling fruit, kelp wrack, marine snow) while keeping conservation tracked.
+    pub fn add_external_detritus_g(&mut self, grams: f32) {
+        let g = grams.max(0.0);
+        self.detritus_pool_g += g;
+        self.external_detritus_kcal += g * Self::KCAL_PER_G_DETRITUS;
+    }
+
+    /// Deposits a direct autotrophic chemosynthetic/photosynthetic pulse into L1 producers and GPP.
+    pub fn add_chemosynthetic_gpp_pulse(&mut self, kcal: f32) {
+        let k = kcal.max(0.0);
+        self.cumulative_gpp_kcal += k;
+        self.assimilation_kcal[TrophicStratum::Producers.index()] += k;
+        self.biomass_kcal[TrophicStratum::Producers.index()] += k;
+    }
+
+    /// Computes primary production input `kcal` over `dt` from irradiance/chemosynthesis, flora vigor, and nutrients.
+    pub fn compute_biome_gpp_step(
+        biome: BiomeKind,
+        par_norm: f32,
+        mean_vigor: f32,
+        trees_len: usize,
+        kelp_len: usize,
+        underbrush_len: usize,
+        mineral_mg: f32,
+        dt: f32,
+    ) -> f32 {
+        if dt <= 0.0 || par_norm <= 0.0 {
+            return 0.0;
+        }
+        let params = TrophicWebParams::for_biome(biome);
+        let par_ref = match biome {
+            BiomeKind::ColdSeepBrinePool | BiomeKind::DeepSeaHydrothermalVent => 0.86,
+            BiomeKind::MidwaterPelagicRift => 0.78,
+            _ => 0.85,
+        };
+        let par_ratio = (par_norm / par_ref).clamp(0.0, 1.45);
+        let stand_weight = if trees_len + kelp_len + underbrush_len == 0 {
+            1.0
+        } else {
+            (0.65 + 0.35 * mean_vigor.clamp(0.3, 1.5)).clamp(0.45, 1.35)
+        };
+        let nut_ratio = (mineral_mg / Self::baseline_mineral_mg(biome).max(1.0)).clamp(0.45, 1.40);
+        params.gpp_star * par_ratio * stand_weight * nut_ratio * dt
+    }
+
     pub fn new_rainforest_baseline() -> Self {
+        let base = Self::baseline_for_biome(BiomeKind::NeotropicalRainforest);
         Self {
-            biomass_kcal: [420.0, 4850.0, 640.0, 210.0, 88.0],
-            cumulative_gpp_kcal: 0.0,
-            assimilation_kcal: [0.0; 5],
-            respiration_kcal: [0.0; 5],
-            detritus_pool_g: 145.0,
-            mineral_nutrient_pool_mg: 92.0,
-            cumulative_mineralized_mg: 0.0,
+            biomass_kcal: base,
+            detritus_pool_g: Self::baseline_detritus_g(BiomeKind::NeotropicalRainforest),
+            mineral_nutrient_pool_mg: Self::baseline_mineral_mg(BiomeKind::NeotropicalRainforest),
+            biomass_history: vec![base; 24],
             ..Default::default()
         }
     }
 
     pub fn new_kelp_forest_baseline() -> Self {
+        let base = Self::baseline_for_biome(BiomeKind::PacificKelpForest);
         Self {
-            biomass_kcal: [510.0, 5620.0, 820.0, 310.0, 125.0],
-            cumulative_gpp_kcal: 0.0,
-            assimilation_kcal: [0.0; 5],
-            respiration_kcal: [0.0; 5],
-            detritus_pool_g: 195.0,
-            mineral_nutrient_pool_mg: 148.0,
-            cumulative_mineralized_mg: 0.0,
+            biomass_kcal: base,
+            detritus_pool_g: Self::baseline_detritus_g(BiomeKind::PacificKelpForest),
+            mineral_nutrient_pool_mg: Self::baseline_mineral_mg(BiomeKind::PacificKelpForest),
+            biomass_history: vec![base; 24],
             ..Default::default()
         }
     }
 
     pub fn new_tidepool_baseline() -> Self {
-        let base = [490.0, 3920.0, 1080.0, 345.0, 134.0];
+        let base = Self::baseline_for_biome(BiomeKind::RockyIntertidalTidepool);
         Self {
             biomass_kcal: base,
-            detritus_pool_g: 176.0,
-            mineral_nutrient_pool_mg: 142.0,
+            detritus_pool_g: Self::baseline_detritus_g(BiomeKind::RockyIntertidalTidepool),
+            mineral_nutrient_pool_mg: Self::baseline_mineral_mg(BiomeKind::RockyIntertidalTidepool),
             biomass_history: vec![base; 24],
             ..Default::default()
         }
     }
 
     pub fn new_brine_pool_baseline() -> Self {
-        let base = [640.0, 4620.0, 1040.0, 330.0, 126.0];
+        let base = Self::baseline_for_biome(BiomeKind::ColdSeepBrinePool);
         Self {
             biomass_kcal: base,
-            detritus_pool_g: 285.0,
-            mineral_nutrient_pool_mg: 248.0,
+            detritus_pool_g: Self::baseline_detritus_g(BiomeKind::ColdSeepBrinePool),
+            mineral_nutrient_pool_mg: Self::baseline_mineral_mg(BiomeKind::ColdSeepBrinePool),
             biomass_history: vec![base; 24],
             ..Default::default()
         }
@@ -862,35 +1386,83 @@ impl TrophicEnergyLedger {
         }
     }
 
-    /// Integrates smooth Lotka-Volterra keystone trophic cascade relaxation and records rolling sparkline samples.
-    pub fn step_keystone_cascade(&mut self, biome: BiomeKind, dt: f32) {
-        let base = Self::baseline_for_biome(biome);
-        let mults: [f32; 5] = if !self.keystone_removed {
-            [1.0, 1.0, 1.0, 1.0, 1.0]
-        } else {
-            match biome {
-                // Paine (1966): Removing Pisaster causes Mytilus mussel monoculture (L2 x2.05) crowding out algae & anemones!
-                BiomeKind::RockyIntertidalTidepool => [1.18, 0.48, 2.05, 0.52, 0.18],
-                // Cold-Seep Engineers removed: biogenic tubeworm/mussel habitat & predators decline
-                BiomeKind::ColdSeepBrinePool => [1.35, 0.44, 0.46, 0.58, 0.45],
-                // Estes & Palmisano: Sea Otter removal -> Urchin Barren (L2 x2.15, Kelp L1 x0.42)!
-                BiomeKind::PacificKelpForest => [1.22, 0.42, 2.15, 0.35, 0.58],
-                // Salmon blockade / Owl loss -> Marine 15N & mycorrhizal subsidy drop!
-                BiomeKind::PnwOldGrowthSalmonCreek => [0.62, 0.74, 0.38, 0.68, 0.25],
-                // Apex predator removal -> mesopredator / herbivore release across remaining biomes
-                BiomeKind::MidwaterPelagicRift => [1.12, 0.85, 0.64, 1.68, 0.20],
-                BiomeKind::DeepSeaHydrothermalVent => [1.24, 0.62, 1.75, 1.32, 0.22],
-                BiomeKind::TemperateFreshwaterLake => [1.28, 0.58, 1.88, 0.72, 0.20],
-                BiomeKind::IndoPacificCoralReef => [1.25, 0.55, 1.72, 0.68, 0.22],
-                BiomeKind::NeotropicalRainforest => [1.18, 0.62, 1.85, 1.38, 0.18],
-            }
+    /// Integrates coupled Rosenzweig-MacArthur / Lotka-Volterra trophic ODEs via midpoint RK2
+    /// with explicit assimilation, respiration, detritus accounting, and rolling sparkline sampling.
+    pub fn step_trophic_ode(
+        &mut self,
+        biome: BiomeKind,
+        gpp_input_kcal: f32,
+        activity_drive: f32,
+        dt: f32,
+    ) {
+        if dt <= 0.0 {
+            return;
+        }
+        let params = TrophicWebParams::for_biome(biome);
+        let gpp_rate_in = (gpp_input_kcal.max(0.0)) / dt;
+        let substeps = ((dt / 0.025).ceil() as usize).clamp(1, 32);
+        let h = dt / substeps as f32;
+
+        let mut d_kcal = self.detritus_pool_g.max(0.0) * Self::KCAL_PER_G_DETRITUS;
+        let mut last_flux = TrophicFluxSample {
+            gpp_eff: 0.0,
+            assim: [0.0; 5],
+            resp: [0.0; 5],
+            db: [0.0; 5],
+            dd_kcal: 0.0,
         };
 
-        let rate = (dt * 0.45).min(1.0);
-        for i in 0..5 {
-            let target = base[i] * mults[i];
-            self.biomass_kcal[i] += (target - self.biomass_kcal[i]) * rate;
+        for _ in 0..substeps {
+            let k1 = params.eval_fluxes(
+                biome,
+                self.biomass_kcal,
+                d_kcal,
+                gpp_rate_in,
+                activity_drive,
+                self.keystone_removed,
+                0.5 * h,
+            );
+            let mut b_mid = [0.0_f32; 5];
+            for i in 0..5 {
+                b_mid[i] = (self.biomass_kcal[i] + 0.5 * h * k1.db[i]).max(0.0);
+            }
+            let d_mid = (d_kcal + 0.5 * h * k1.dd_kcal).max(0.0);
+
+            let k2 = params.eval_fluxes(
+                biome,
+                b_mid,
+                d_mid,
+                gpp_rate_in,
+                activity_drive,
+                self.keystone_removed,
+                h,
+            );
+
+            for i in 0..5 {
+                self.biomass_kcal[i] = (self.biomass_kcal[i] + h * k2.db[i]).max(0.0);
+                self.assimilation_kcal[i] += h * k2.assim[i];
+                self.respiration_kcal[i] += h * k2.resp[i];
+            }
+            d_kcal = (d_kcal + h * k2.dd_kcal).max(0.0);
+            self.cumulative_gpp_kcal += h * k2.gpp_eff;
+            last_flux = k2;
         }
+
+        self.detritus_pool_g = d_kcal / Self::KCAL_PER_G_DETRITUS;
+
+        let ema_a = (dt / 2.5).clamp(0.02, 1.0);
+        for i in 0..5 {
+            if self.last_assim_rate_kcal_s[1] <= 1e-6 {
+                self.last_assim_rate_kcal_s[i] = last_flux.assim[i];
+                self.last_resp_rate_kcal_s[i] = last_flux.resp[i];
+            } else {
+                self.last_assim_rate_kcal_s[i] +=
+                    (last_flux.assim[i] - self.last_assim_rate_kcal_s[i]) * ema_a;
+                self.last_resp_rate_kcal_s[i] +=
+                    (last_flux.resp[i] - self.last_resp_rate_kcal_s[i]) * ema_a;
+            }
+        }
+
         if self.keystone_removed && biome == BiomeKind::PnwOldGrowthSalmonCreek {
             self.mineral_nutrient_pool_mg = (self.mineral_nutrient_pool_mg - 6.5 * dt).max(48.0);
         }
@@ -905,82 +1477,137 @@ impl TrophicEnergyLedger {
         }
     }
 
+    /// Advances the coupled trophic ODEs using nominal daytime/chemosynthetic primary production.
+    pub fn step_keystone_cascade(&mut self, biome: BiomeKind, dt: f32) {
+        let params = TrophicWebParams::for_biome(biome);
+        self.step_trophic_ode(biome, params.gpp_star * dt, 1.0, dt);
+    }
+
     pub fn new_pelagic_rift_baseline() -> Self {
+        let base = Self::baseline_for_biome(BiomeKind::MidwaterPelagicRift);
         Self {
             // Marine snow + huge mesopelagic DVM lanternfish/krill biomass supporting diving sperm whales & giant squid!
-            biomass_kcal: [540.0, 4480.0, 1120.0, 390.0, 156.0],
-            cumulative_gpp_kcal: 0.0,
-            assimilation_kcal: [0.0; 5],
-            respiration_kcal: [0.0; 5],
-            detritus_pool_g: 310.0,
-            mineral_nutrient_pool_mg: 188.0,
-            cumulative_mineralized_mg: 0.0,
+            biomass_kcal: base,
+            detritus_pool_g: Self::baseline_detritus_g(BiomeKind::MidwaterPelagicRift),
+            mineral_nutrient_pool_mg: Self::baseline_mineral_mg(BiomeKind::MidwaterPelagicRift),
+            biomass_history: vec![base; 24],
             ..Default::default()
         }
     }
 
     pub fn new_pnw_old_growth_baseline() -> Self {
+        let base = Self::baseline_for_biome(BiomeKind::PnwOldGrowthSalmonCreek);
         Self {
             // Massive standing Douglas-fir/Redcedar biomass + marine-derived 15N salmon subsidy!
-            biomass_kcal: [580.0, 6420.0, 740.0, 260.0, 108.0],
-            cumulative_gpp_kcal: 0.0,
-            assimilation_kcal: [0.0; 5],
-            respiration_kcal: [0.0; 5],
-            detritus_pool_g: 245.0,
-            mineral_nutrient_pool_mg: 164.0,
-            cumulative_mineralized_mg: 0.0,
+            biomass_kcal: base,
+            detritus_pool_g: Self::baseline_detritus_g(BiomeKind::PnwOldGrowthSalmonCreek),
+            mineral_nutrient_pool_mg: Self::baseline_mineral_mg(BiomeKind::PnwOldGrowthSalmonCreek),
+            biomass_history: vec![base; 24],
             ..Default::default()
         }
     }
 
     pub fn new_hydrothermal_vent_baseline() -> Self {
+        let base = Self::baseline_for_biome(BiomeKind::DeepSeaHydrothermalVent);
         Self {
             // 100% Chemosynthetic RuBisCO-II & rTCA sulfur/methane-oxidizing primary production!
-            biomass_kcal: [620.0, 5180.0, 960.0, 340.0, 132.0],
-            cumulative_gpp_kcal: 0.0,
-            assimilation_kcal: [0.0; 5],
-            respiration_kcal: [0.0; 5],
-            detritus_pool_g: 230.0,
-            mineral_nutrient_pool_mg: 215.0,
-            cumulative_mineralized_mg: 0.0,
+            biomass_kcal: base,
+            detritus_pool_g: Self::baseline_detritus_g(BiomeKind::DeepSeaHydrothermalVent),
+            mineral_nutrient_pool_mg: Self::baseline_mineral_mg(BiomeKind::DeepSeaHydrothermalVent),
+            biomass_history: vec![base; 24],
             ..Default::default()
         }
     }
 
     pub fn new_freshwater_lake_baseline() -> Self {
+        let base = Self::baseline_for_biome(BiomeKind::TemperateFreshwaterLake);
         Self {
-            biomass_kcal: [440.0, 4680.0, 790.0, 295.0, 118.0],
-            cumulative_gpp_kcal: 0.0,
-            assimilation_kcal: [0.0; 5],
-            respiration_kcal: [0.0; 5],
-            detritus_pool_g: 168.0,
-            mineral_nutrient_pool_mg: 86.0,
-            cumulative_mineralized_mg: 0.0,
+            biomass_kcal: base,
+            detritus_pool_g: Self::baseline_detritus_g(BiomeKind::TemperateFreshwaterLake),
+            mineral_nutrient_pool_mg: Self::baseline_mineral_mg(BiomeKind::TemperateFreshwaterLake),
+            biomass_history: vec![base; 24],
             ..Default::default()
         }
     }
 
     pub fn new_coral_reef_baseline() -> Self {
+        let base = Self::baseline_for_biome(BiomeKind::IndoPacificCoralReef);
         Self {
             // Tightly recycled Darwin-Paradox Symbiodinium coral holobiont & high reef fish standing stock!
-            biomass_kcal: [460.0, 4380.0, 910.0, 365.0, 148.0],
-            cumulative_gpp_kcal: 0.0,
-            assimilation_kcal: [0.0; 5],
-            respiration_kcal: [0.0; 5],
-            detritus_pool_g: 112.0,
-            mineral_nutrient_pool_mg: 64.0,
-            cumulative_mineralized_mg: 0.0,
+            biomass_kcal: base,
+            detritus_pool_g: Self::baseline_detritus_g(BiomeKind::IndoPacificCoralReef),
+            mineral_nutrient_pool_mg: Self::baseline_mineral_mg(BiomeKind::IndoPacificCoralReef),
+            biomass_history: vec![base; 24],
             ..Default::default()
         }
     }
 
+    /// Net trophic production `P_i = max(0, A_i - R_i)` (cumulative kcal).
+    pub fn net_production_kcal(&self, stratum: TrophicStratum) -> f32 {
+        let idx = stratum.index();
+        (self.assimilation_kcal[idx] - self.respiration_kcal[idx]).max(0.0)
+    }
+
+    /// Lindeman production transfer efficiency (`P_n / P_{n-1} * 100%` for `L2..L4`;
+    /// `NPP / GPP` for `L1` producers; microbial carbon-use efficiency `P_0 / A_0` for `L0`).
     pub fn transfer_efficiency_pct(&self, stratum: TrophicStratum) -> f32 {
         let idx = stratum.index();
-        if idx <= 1 {
-            return 100.0;
+        let use_live = self.last_assim_rate_kcal_s[1] > 1e-4;
+        if use_live {
+            let net = |k: usize| -> f32 {
+                (self.last_assim_rate_kcal_s[k] - self.last_resp_rate_kcal_s[k]).max(0.0)
+            };
+            return match idx {
+                0 => {
+                    let a0 = self.last_assim_rate_kcal_s[0];
+                    if a0 > 1e-4 {
+                        ((net(0) / a0) * 100.0).clamp(0.0, 100.0)
+                    } else {
+                        35.0
+                    }
+                }
+                1 => {
+                    let a1 = self.last_assim_rate_kcal_s[1];
+                    if a1 > 1e-4 {
+                        ((net(1) / a1) * 100.0).clamp(0.0, 100.0)
+                    } else {
+                        54.0
+                    }
+                }
+                _ => {
+                    let prev_p = net(idx - 1);
+                    if prev_p > 1e-4 {
+                        ((net(idx) / prev_p) * 100.0).clamp(0.0, 100.0)
+                    } else {
+                        0.0
+                    }
+                }
+            };
         }
-        let prev = self.biomass_kcal[idx - 1].max(1e-3);
-        ((self.biomass_kcal[idx] / prev) * 100.0).clamp(0.0, 100.0)
+
+        if self.assimilation_kcal[1] > 1e-4 {
+            return match idx {
+                0 => ((self.net_production_kcal(stratum) / self.assimilation_kcal[0].max(1e-4))
+                    * 100.0)
+                    .clamp(0.0, 100.0),
+                1 => ((self.net_production_kcal(stratum) / self.assimilation_kcal[1].max(1e-4))
+                    * 100.0)
+                    .clamp(0.0, 100.0),
+                _ => {
+                    let prev = TrophicStratum::ALL[idx - 1];
+                    let prev_p = self.net_production_kcal(prev).max(1e-4);
+                    ((self.net_production_kcal(stratum) / prev_p) * 100.0).clamp(0.0, 100.0)
+                }
+            };
+        }
+
+        match idx {
+            0 => 35.0,
+            1 => 54.0,
+            2 => 16.7,
+            3 => 16.5,
+            _ => 18.0,
+        }
     }
 }
 

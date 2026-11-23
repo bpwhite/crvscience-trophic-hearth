@@ -20,7 +20,7 @@ use crate::physics::{
     brine_pool_height_at, coral_reef_height_at, ground_height_at, lake_bed_height_at, ocean_swell_vx, pelagic_rift_height_at, pnw_creek_forest_height_at, reef_height_at, tidepool_bench_height_at, vent_field_height_at, BranchSegment, BRINE_POOL_SURFACE_Y, LAKE_SURFACE_Y, PNW_CREEK_SURFACE_Y, DetritusKind, FallingDetritus,
     KelpStalk, LianaVine, UnderbrushKind, UnderbrushPlant, GRAVITY_M_S2, KELP_SURFACE_Y,
 };
-use crate::trophic::{BiomeKind, DiurnalCycle, TrophicEnergyLedger, TrophicFocus, TrophicStratum};
+use crate::trophic::{BiomeKind, DiurnalCycle, TrophicEnergyLedger, TrophicFocus};
 use glam::{Vec2, Vec3};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
@@ -3325,7 +3325,7 @@ impl RainforestWorld {
             }
             StochasticEventKind::HermitCrabWrackScavenge => {
                 self.ant_patches = vec![AntForagePatch { pos: Vec3::new(-1.8, 1.8, 0.5), remaining_fragments: 20 }];
-                self.ledger.detritus_pool_g += 24.0;
+                self.ledger.add_external_detritus_g(24.0);
                 self.events.record(day, hr, kind.title(), "Pagurus hermit crabs & 8-plated Black Katy chitons converge on newly stranded bull-kelp wrack.");
             }
 
@@ -3354,7 +3354,7 @@ impl RainforestWorld {
                 self.events.record(day, hr, kind.title(), "Pink Sirsoe methanicola polychaete ice worms undulate inside carved hollows on golden methane clathrate ice.");
             }
             StochasticEventKind::LamellibrachiaRootUptake => {
-                self.ledger.cumulative_gpp_kcal += 18.0;
+                self.ledger.add_chemosynthetic_gpp_pulse(18.0);
                 self.events.record(day, hr, kind.title(), "250-year-old Lamellibrachia luymesi tubeworms pump subsurface hydrogen sulfide up into chemoautotrophic gill plumes.");
             }
             StochasticEventKind::RedCrabMusselPatrol => {
@@ -3383,7 +3383,7 @@ impl RainforestWorld {
                 self.events.record(day, hr, kind.title(), "Counter-illuminating Myctophid lanternfish, silver hatchetfish & krill surge upward through the twilight rift!");
             }
             StochasticEventKind::MarineSnowMucusFall => {
-                self.ledger.detritus_pool_g += 38.0;
+                self.ledger.add_external_detritus_g(38.0);
                 self.ledger.mineral_nutrient_pool_mg = (self.ledger.mineral_nutrient_pool_mg + 28.0).min(300.0);
                 self.ant_patches = vec![AntForagePatch { pos: Vec3::new(2.5, 2.4, 0.4), remaining_fragments: 24 }];
                 self.pending_sounds.push(SoundCue {
@@ -4328,25 +4328,49 @@ impl RainforestWorld {
         } else {
             (atmo.par_umol_m2_s / 1750.0).clamp(0.0, 1.2)
         };
-        let mut gpp_step = 0.0_f32;
+        let mut raw_floral_gpp = 0.0_f32;
+        let mut vigor_sum = 0.0_f32;
         for plant in &mut self.underbrush {
             let nut = self
                 .floor_field
                 .consume_nutrients(Vec2::new(plant.root_pos.x, plant.root_pos.z), 0.008 * dt);
             plant.step(dt, wind_x, par_norm, nut * 40.0 + 0.5);
-            gpp_step += 0.045 * par_norm * plant.vigor * dt;
+            raw_floral_gpp += 0.045 * par_norm * plant.vigor * dt;
+            vigor_sum += plant.vigor;
         }
-        gpp_step += 0.48 * par_norm * dt * (self.trees.len() + self.kelp_stalks.len()) as f32;
-        self.ledger.cumulative_gpp_kcal += gpp_step;
-        self.ledger.biomass_kcal[TrophicStratum::Producers.index()] =
-            (self.ledger.biomass_kcal[TrophicStratum::Producers.index()] + gpp_step * 0.25)
-                .clamp(3800.0, 6800.0);
+        let mean_vigor = if self.underbrush.is_empty() {
+            1.0
+        } else {
+            vigor_sum / self.underbrush.len() as f32
+        };
+        raw_floral_gpp += 0.48 * par_norm * dt * (self.trees.len() + self.kelp_stalks.len()) as f32;
+
+        let gpp_step_kcal = TrophicEnergyLedger::compute_biome_gpp_step(
+            self.biome,
+            par_norm,
+            mean_vigor,
+            self.trees.len(),
+            self.kelp_stalks.len(),
+            self.underbrush.len(),
+            self.ledger.mineral_nutrient_pool_mg,
+            dt,
+        );
+        let activity_drive = if matches!(
+            self.biome,
+            BiomeKind::ColdSeepBrinePool
+                | BiomeKind::MidwaterPelagicRift
+                | BiomeKind::DeepSeaHydrothermalVent
+        ) {
+            1.0
+        } else {
+            0.08 + 0.92 * (par_norm / 0.85).clamp(0.0, 1.0)
+        };
 
         for item in &mut self.falling_detritus {
             if item.step(dt, &self.branches) && item.settled_on_ground {
                 self.floor_field
                     .deposit_detritus(Vec2::new(item.pos.x, item.pos.z), 0.85);
-                self.ledger.detritus_pool_g += 1.4;
+                self.ledger.add_external_detritus_g(1.4);
             }
         }
         self.falling_detritus.retain(|d| d.remaining_mass > 0.05);
@@ -4360,7 +4384,10 @@ impl RainforestWorld {
                 .step(dt, self.diurnal.rain_intensity, self.diurnal.foliage_wetness);
         self.ledger.cumulative_mineralized_mg += mineralized * 12.0;
         self.ledger.mineral_nutrient_pool_mg =
-            (self.ledger.mineral_nutrient_pool_mg + mineralized * 8.0 - gpp_step * 0.35)
+            (self.ledger.mineral_nutrient_pool_mg
+                + mineralized * 8.0
+                + self.ledger.last_resp_rate_kcal_s[0] * 0.012 * dt
+                - raw_floral_gpp * 0.35)
                 .clamp(25.0, 280.0);
         self.ant_patches.retain(|p| p.remaining_fragments > 0);
 
@@ -4403,7 +4430,8 @@ impl RainforestWorld {
         let is_rift_biome = self.biome == BiomeKind::MidwaterPelagicRift;
         let is_tidepool_biome = self.biome == BiomeKind::RockyIntertidalTidepool;
         let is_brine_biome = self.biome == BiomeKind::ColdSeepBrinePool;
-        self.ledger.step_keystone_cascade(self.biome, dt);
+        self.ledger
+            .step_trophic_ode(self.biome, gpp_step_kcal, activity_drive, dt);
         let night_f = atmo.night_factor;
 
         for idx in 0..self.organisms.len() {
@@ -4414,7 +4442,6 @@ impl RainforestWorld {
 
             let bmr_kcal = 0.0018 * org.species.typical_mass_kg().powf(0.75) * dt;
             org.energy_kcal = (org.energy_kcal - bmr_kcal).max(0.2 * org.max_energy_kcal);
-            self.ledger.respiration_kcal[org.stratum().index()] += bmr_kcal;
 
             match org.state.clone() {
                 // ================= PACIFIC KELP FOREST ETHOLOGY =================
@@ -4486,8 +4513,6 @@ impl RainforestWorld {
                         org.vel = Vec3::ZERO;
                         org.pose.body_pitch = 0.0;
                         org.energy_kcal = (org.energy_kcal + 5.5).min(org.max_energy_kcal);
-                        self.ledger.assimilation_kcal[TrophicStratum::SecondaryConsumers.index()] +=
-                            5.5;
                         org.state = BehaviorState::OtterChestStoneTap {
                             remaining_sec: rng.gen_range(4.5..7.2),
                             tap_cooldown: 0.4,
@@ -5523,8 +5548,6 @@ impl RainforestWorld {
                         org.pos = anchor_pos;
                         org.vel = Vec3::ZERO;
                         org.energy_kcal = (org.energy_kcal + 6.5).min(org.max_energy_kcal);
-                        self.ledger.assimilation_kcal[TrophicStratum::TertiaryCarnivores.index()] +=
-                            6.5;
                         org.state = BehaviorState::SnakeBaskingDigest {
                             branch_id: 0,
                             branch_t: 0.55,

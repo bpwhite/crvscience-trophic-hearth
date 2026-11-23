@@ -15,7 +15,7 @@
 
 use crate::models_3d::{append_flora_geometry, append_organism_geometry, Tri3D};
 use crate::physics::{brine_pool_height_at, coral_reef_height_at, ground_height_at, lake_bed_height_at, pelagic_rift_height_at, pnw_creek_forest_height_at, reef_height_at, tidepool_bench_height_at, tidepool_water_level, vent_field_height_at, BRINE_POOL_SURFACE_Y, KELP_SURFACE_Y, LAKE_SURFACE_Y, PNW_CREEK_SURFACE_Y};
-use crate::trophic::{BiomeKind, TrophicFocus, TrophicStratum};
+use crate::trophic::{BiomeKind, DiurnalAtmosphere, TrophicFocus, TrophicStratum};
 use crate::world::RainforestWorld;
 use egui::{Color32, Mesh, Painter, Pos2, Rect, Shape, Stroke, Vec2 as EguiVec2};
 use glam::{Mat4, Vec3, Vec4};
@@ -38,51 +38,116 @@ pub struct DioramaCamera {
     pub distance_m: f32,
     pub fov_y_rad: f32,
     pub breathing_enabled: bool,
+    goal_target: Vec3,
+    goal_yaw_rad: f32,
+    goal_pitch_rad: f32,
+    goal_distance_m: f32,
+    pub interpolating: bool,
 }
 
 impl Default for DioramaCamera {
     fn default() -> Self {
+        let (target, yaw_rad, pitch_rad, distance_m) = Self::preset_pose(CameraPreset::SideDiorama);
         Self {
             preset: CameraPreset::SideDiorama,
-            target: Vec3::new(0.0, 6.2, -1.0),
-            yaw_rad: 0.0,
-            pitch_rad: 0.04,
-            distance_m: 23.8,
+            target,
+            yaw_rad,
+            pitch_rad,
+            distance_m,
             fov_y_rad: 44.0_f32.to_radians(),
             breathing_enabled: true,
+            goal_target: target,
+            goal_yaw_rad: yaw_rad,
+            goal_pitch_rad: pitch_rad,
+            goal_distance_m: distance_m,
+            interpolating: false,
         }
     }
 }
 
 impl DioramaCamera {
+    fn preset_pose(preset: CameraPreset) -> (Vec3, f32, f32, f32) {
+        match preset {
+            CameraPreset::SideDiorama => (Vec3::new(0.0, 6.0, -1.0), 0.0, 0.04, 23.8),
+            CameraPreset::UnderbrushStalkMacro => (Vec3::new(-1.5, 2.2, 0.2), 0.14, 0.08, 9.8),
+            CameraPreset::CanopyAmbushPerch => (Vec3::new(-1.0, 11.8, -0.8), -0.08, 0.04, 12.8),
+            CameraPreset::SoilDecomposerLens => (Vec3::new(-4.5, 0.4, 0.6), 0.06, 0.16, 8.4),
+            CameraPreset::FreeOrbit => (Vec3::new(0.0, 6.0, -1.0), 0.0, 0.04, 23.8),
+        }
+    }
+
+    /// Starts a smooth exponential transition toward `preset` (or keeps current pose for `FreeOrbit`).
     pub fn apply_preset(&mut self, preset: CameraPreset) {
         self.preset = preset;
-        match preset {
-            CameraPreset::SideDiorama => {
-                self.target = Vec3::new(0.0, 6.0, -1.0);
-                self.yaw_rad = 0.0;
-                self.pitch_rad = 0.04;
-                self.distance_m = 23.8;
-            }
-            CameraPreset::UnderbrushStalkMacro => {
-                self.target = Vec3::new(-1.5, 2.2, 0.2);
-                self.yaw_rad = 0.14;
-                self.pitch_rad = 0.08;
-                self.distance_m = 9.8;
-            }
-            CameraPreset::CanopyAmbushPerch => {
-                self.target = Vec3::new(-1.0, 11.8, -0.8);
-                self.yaw_rad = -0.08;
-                self.pitch_rad = 0.04;
-                self.distance_m = 12.8;
-            }
-            CameraPreset::SoilDecomposerLens => {
-                self.target = Vec3::new(-4.5, 0.4, 0.6);
-                self.yaw_rad = 0.06;
-                self.pitch_rad = 0.16;
-                self.distance_m = 8.4;
-            }
-            CameraPreset::FreeOrbit => {}
+        if preset == CameraPreset::FreeOrbit {
+            self.cancel_interpolation();
+            return;
+        }
+        let (gt, gy, gp, gd) = Self::preset_pose(preset);
+        self.goal_target = gt;
+        self.goal_yaw_rad = gy;
+        self.goal_pitch_rad = gp;
+        self.goal_distance_m = gd;
+        self.interpolating = true;
+    }
+
+    /// Immediately snaps camera state and interpolation target to `preset` (used for headless captures & biome switches).
+    pub fn snap_to_preset(&mut self, preset: CameraPreset) {
+        self.preset = preset;
+        if preset != CameraPreset::FreeOrbit {
+            let (gt, gy, gp, gd) = Self::preset_pose(preset);
+            self.target = gt;
+            self.yaw_rad = gy;
+            self.pitch_rad = gp;
+            self.distance_m = gd;
+            self.goal_target = gt;
+            self.goal_yaw_rad = gy;
+            self.goal_pitch_rad = gp;
+            self.goal_distance_m = gd;
+        }
+        self.interpolating = false;
+    }
+
+    /// Cancels any active preset glide and anchors the goal to the current pose.
+    pub fn cancel_interpolation(&mut self) {
+        self.goal_target = self.target;
+        self.goal_yaw_rad = self.yaw_rad;
+        self.goal_pitch_rad = self.pitch_rad;
+        self.goal_distance_m = self.distance_m;
+        self.interpolating = false;
+    }
+
+    /// Applies scroll zoom without letting an in-progress preset transition override the user's zoom distance.
+    pub fn zoom_by(&mut self, delta_m: f32) {
+        self.distance_m = (self.distance_m + delta_m).clamp(4.5, 32.0);
+        self.goal_distance_m = self.distance_m;
+    }
+
+    /// Advances smooth preset interpolation using critically damped exponential smoothing.
+    pub fn step(&mut self, dt_sec: f32) {
+        if !self.interpolating || self.preset == CameraPreset::FreeOrbit {
+            return;
+        }
+        let dt = dt_sec.clamp(0.0, 0.1);
+        if dt <= 0.0 {
+            return;
+        }
+        let alpha = 1.0 - (-dt * 8.5).exp();
+        self.target = self.target.lerp(self.goal_target, alpha);
+        self.yaw_rad += (self.goal_yaw_rad - self.yaw_rad) * alpha;
+        self.pitch_rad += (self.goal_pitch_rad - self.pitch_rad) * alpha;
+        self.distance_m += (self.goal_distance_m - self.distance_m) * alpha;
+
+        if (self.target - self.goal_target).length() < 1e-3
+            && (self.yaw_rad - self.goal_yaw_rad).abs() < 1e-4
+            && (self.pitch_rad - self.goal_pitch_rad).abs() < 1e-4
+            && (self.distance_m - self.goal_distance_m).abs() < 1e-3
+        {
+            self.target = self.goal_target;
+            self.yaw_rad = self.goal_yaw_rad;
+            self.pitch_rad = self.goal_pitch_rad;
+            self.distance_m = self.goal_distance_m;
+            self.interpolating = false;
         }
     }
 
@@ -134,6 +199,75 @@ fn to_color32(rgba: [f32; 4]) -> Color32 {
     let b = (rgba[2].clamp(0.0, 1.0) * 255.0) as u8;
     let a = (rgba[3].clamp(0.0, 1.0) * 255.0) as u8;
     Color32::from_rgba_unmultiplied(r, g, b, a)
+}
+
+/// Computes surface wave caustics (in sunlit aquatic zones) or forest canopy dapple.
+/// Strictly returns `1.0` when `atmo.par_umol_m2_s <= 0.0` (e.g. aphotic vents, cold seeps, and night).
+pub fn surface_caustic_or_dapple(
+    biome: BiomeKind,
+    atmo: &DiurnalAtmosphere,
+    center: Vec3,
+    t_sec: f32,
+) -> f32 {
+    if atmo.par_umol_m2_s <= 0.0 {
+        return 1.0;
+    }
+    let solar_atten = (atmo.par_umol_m2_s / 600.0).clamp(0.0, 1.0);
+    let submerged = match biome {
+        BiomeKind::PacificKelpForest
+        | BiomeKind::IndoPacificCoralReef
+        | BiomeKind::MidwaterPelagicRift => true,
+        BiomeKind::TemperateFreshwaterLake => center.y <= LAKE_SURFACE_Y + 0.15,
+        BiomeKind::RockyIntertidalTidepool => center.y <= 3.6,
+        BiomeKind::PnwOldGrowthSalmonCreek => center.y <= PNW_CREEK_SURFACE_Y + 0.15 && center.x > 1.2,
+        BiomeKind::DeepSeaHydrothermalVent
+        | BiomeKind::ColdSeepBrinePool
+        | BiomeKind::NeotropicalRainforest => false,
+    };
+    if submerged {
+        let c1 = (center.x * 1.45 + t_sec * 1.8).sin() * (center.z * 1.35 - t_sec * 1.4).cos();
+        let c2 = ((center.x - center.z) * 2.2 + t_sec * 2.3).sin();
+        let caustic = 0.82 + 0.34 * (c1 * 0.6 + c2 * 0.4).max(0.0);
+        1.0 + (caustic - 1.0) * solar_atten
+    } else {
+        let dapple =
+            0.76 + 0.24 * ((center.x * 0.8 + t_sec * 0.3).sin() * (center.z * 0.7 - t_sec * 0.2).cos());
+        1.0 + (dapple - 1.0) * solar_atten
+    }
+}
+
+/// Selects up to 4 well-spaced 3D anchor points on actual `L1` producer stands
+/// (`kelp_stalks`, `trees`, or `underbrush`) for calm food-web energy-flux arcs.
+pub fn producer_flux_anchors(world: &RainforestWorld, t_sec: f32) -> Vec<Vec3> {
+    let mut anchors = Vec::with_capacity(4);
+    if !world.kelp_stalks.is_empty() {
+        let step = (world.kelp_stalks.len() / 4).max(1);
+        for stalk in world.kelp_stalks.iter().step_by(step).take(4) {
+            anchors.push(stalk.point_along(0.62, t_sec, 0.35));
+        }
+    } else if !world.trees.is_empty() {
+        let step = (world.trees.len() / 4).max(1);
+        for tree in world.trees.iter().step_by(step).take(4) {
+            anchors.push(
+                tree.base_pos + Vec3::new(0.0, (tree.height_m * 0.58).min(11.0), 0.0),
+            );
+        }
+    }
+    if anchors.len() < 4 && !world.underbrush.is_empty() {
+        let needed = 4 - anchors.len();
+        let step = (world.underbrush.len() / needed.max(1)).max(1);
+        for plant in world.underbrush.iter().step_by(step).take(needed) {
+            anchors.push(
+                plant.root_pos
+                    + Vec3::new(
+                        plant.bend_xz[0] * 0.3,
+                        (0.45 * plant.scale).max(0.32),
+                        plant.bend_xz[1] * 0.3,
+                    ),
+            );
+        }
+    }
+    anchors
 }
 
 pub fn render_rainforest_viewport(
@@ -441,18 +575,23 @@ pub fn render_rainforest_viewport(
         append_organism_geometry(&mut tris, org, atmo.night_factor);
     }
 
-    // 3. Shade & Depth-Sort 3D Triangles (with Underwater Caustics or Canopy Dapple)
+    // 3. Shade & Depth-Sort 3D Triangles (with PAR-Gated Caustics, Rim Separation & Depth Cues)
     let sun_dir = Vec3::from_array(atmo.sun_direction).normalize_or_zero();
     let sun_rgb = Vec3::from_array(atmo.sun_rgb);
     let fog_rgb = Vec3::from_array(atmo.fog_rgb);
     let sky_amb = Vec3::from_array(atmo.sky_horizon_rgb) * 0.48;
-    let floor_amb = if is_coral {
-        Vec3::new(0.18, 0.28, 0.30)
-    } else if is_kelp {
-        Vec3::new(0.05, 0.14, 0.18)
-    } else {
-        Vec3::new(0.14, 0.10, 0.07)
+    let floor_amb = match world.biome {
+        BiomeKind::IndoPacificCoralReef => Vec3::new(0.18, 0.28, 0.30),
+        BiomeKind::PacificKelpForest => Vec3::new(0.05, 0.14, 0.18),
+        BiomeKind::DeepSeaHydrothermalVent => Vec3::new(0.12, 0.05, 0.03),
+        BiomeKind::ColdSeepBrinePool => Vec3::new(0.04, 0.06, 0.12),
+        BiomeKind::MidwaterPelagicRift => Vec3::new(0.02, 0.05, 0.11),
+        BiomeKind::RockyIntertidalTidepool => Vec3::new(0.10, 0.13, 0.16),
+        BiomeKind::TemperateFreshwaterLake => Vec3::new(0.09, 0.13, 0.09),
+        BiomeKind::PnwOldGrowthSalmonCreek => Vec3::new(0.08, 0.12, 0.07),
+        BiomeKind::NeotropicalRainforest => Vec3::new(0.14, 0.10, 0.07),
     };
+    let biolum_boost = 0.65 + 0.75 * atmo.night_factor;
 
     struct ProjectedTri {
         depth: f32,
@@ -473,25 +612,35 @@ pub fn render_rainforest_viewport(
         let hemi = n.y * 0.5 + 0.5;
         let ambient = floor_amb.lerp(sky_amb, hemi);
         let n_dot_l = (n.dot(sun_dir) * 0.75 + 0.25).clamp(0.0, 1.0);
-
-        let dapple_or_caustic = if is_marine {
-            // Shimmering underwater surface wave caustics!
-            let c1 = (center.x * 1.45 + t_sec * 1.8).sin() * (center.z * 1.35 - t_sec * 1.4).cos();
-            let c2 = ((center.x - center.z) * 2.2 + t_sec * 2.3).sin();
-            0.82 + 0.34 * (c1 * 0.6 + c2 * 0.4).max(0.0)
-        } else {
-            0.76 + 0.24 * ((center.x * 0.8 + t_sec * 0.3).sin() * (center.z * 0.7 - t_sec * 0.2).cos())
-        };
+        let dapple_or_caustic = surface_caustic_or_dapple(world.biome, &atmo, center, t_sec);
 
         let half_v = (sun_dir + view_vec).normalize_or_zero();
         let wetness = if is_marine { 0.85 } else { world.diurnal.foliage_wetness };
         let spec_pow = (1.0 - tri.roughness * (1.0 - 0.5 * wetness)).clamp(0.1, 0.95) * 48.0;
         let spec = n.dot(half_v).max(0.0).powf(spec_pow) * (0.08 + 0.28 * wetness) * atmo.sun_intensity;
 
+        let ndotv = n.dot(view_vec).clamp(0.0, 1.0);
+        let rim = (1.0 - ndotv).powf(3.0) * 0.16 * sky_amb;
+
+        let vent_glow = if is_vent {
+            let d2 = (center - Vec3::new(-0.4, 5.2, -1.1)).length_squared();
+            let atten = 1.0 / (1.0 + 0.055 * d2);
+            Vec3::new(0.55, 0.19, 0.05) * atten
+        } else {
+            Vec3::ZERO
+        };
+
         let base = Vec3::new(tri.rgba[0], tri.rgba[1], tri.rgba[2]);
-        let mut lit = base * (ambient + sun_rgb * (atmo.sun_intensity * n_dot_l * dapple_or_caustic))
+        let mut lit = base * (ambient + sun_rgb * (atmo.sun_intensity * n_dot_l * dapple_or_caustic) + vent_glow)
             + sun_rgb * spec
-            + base * tri.emissive;
+            + rim
+            + base * (tri.emissive * biolum_boost);
+
+        if is_aquatic && atmo.par_umol_m2_s > 0.0 && center.y < KELP_SURFACE_Y {
+            let sub_depth = (KELP_SURFACE_Y - center.y).clamp(0.0, 14.0);
+            let atten = (-sub_depth * 0.018).exp();
+            lit *= Vec3::new(0.84 + 0.16 * atten, 0.94 + 0.06 * atten, 1.0);
+        }
 
         if let TrophicFocus::Single(target_s) = world.focus {
             if tri.stratum != target_s {
@@ -595,8 +744,8 @@ pub fn render_rainforest_viewport(
         }
     }
 
-    // 4. Volumetric Caustic / Sunbeam Shafts
-    if atmo.sun_elevation_rad > 0.05 && (is_marine || world.diurnal.rain_intensity < 0.45) {
+    // 4. Volumetric Caustic / Sunbeam Shafts (gated on solar PAR > 0)
+    if atmo.par_umol_m2_s > 1.0 && atmo.sun_elevation_rad > 0.05 && (is_marine || world.diurnal.rain_intensity < 0.45) {
         let beam_col = if is_marine {
             Color32::from_rgba_unmultiplied(125, 240, 255, 26)
         } else {
@@ -670,24 +819,40 @@ pub fn render_rainforest_viewport(
         }
     }
 
-    // 5B. Calm, Non-Strobing 3D Food-Web Energy-Flux Arcs (L0 -> L1/L2 -> L3 -> L4)!
+    // 5B. Calm, Non-Strobing 3D Food-Web Energy-Flux Arcs (L0 -> L1 -> L2 -> L3 -> L4)!
     if world.ledger.show_flux_arcs {
         let active_orgs: Vec<&crate::organisms::Organism> = world
             .organisms
             .iter()
             .filter(|o| !(world.ledger.keystone_removed && o.species.is_keystone_species()))
             .collect();
+        let prod_anchors = producer_flux_anchors(world, t_sec);
+
+        let anchors_for_stratum = |stratum: TrophicStratum| -> Vec<(Option<u32>, Vec3)> {
+            if stratum == TrophicStratum::Producers {
+                prod_anchors.iter().map(|&p| (None, p)).collect()
+            } else {
+                active_orgs
+                    .iter()
+                    .filter(|o| o.stratum() == stratum)
+                    .take(4)
+                    .map(|o| (Some(o.id), o.pos + Vec3::new(0.0, 0.25, 0.0)))
+                    .collect()
+            }
+        };
 
         for s_idx in 0..4_usize {
             let src_stratum = TrophicStratum::ALL[s_idx];
             let dst_stratum = TrophicStratum::ALL[s_idx + 1];
-            let srcs: Vec<&&crate::organisms::Organism> = active_orgs.iter().filter(|o| o.stratum() == src_stratum).take(4).collect();
-            let dsts: Vec<&&crate::organisms::Organism> = active_orgs.iter().filter(|o| o.stratum() == dst_stratum).take(4).collect();
-            for (k, src_o) in srcs.iter().enumerate() {
-                if let Some(dst_o) = dsts.get(k % dsts.len().max(1)) {
-                    let is_sel = selected_id == Some(src_o.id) || selected_id == Some(dst_o.id);
-                    let p0 = src_o.pos + Vec3::new(0.0, 0.25, 0.0);
-                    let p2 = dst_o.pos + Vec3::new(0.0, 0.25, 0.0);
+            let srcs = anchors_for_stratum(src_stratum);
+            let dsts = anchors_for_stratum(dst_stratum);
+            if srcs.is_empty() || dsts.is_empty() {
+                continue;
+            }
+            for (k, &(src_id, p0)) in srcs.iter().enumerate() {
+                if let Some(&(dst_id, p2)) = dsts.get(k % dsts.len()) {
+                    let is_sel = selected_id.is_some()
+                        && (src_id == selected_id || dst_id == selected_id);
                     let mid = (p0 + p2) * 0.5 + Vec3::new(0.0, 1.35 + 0.25 * s_idx as f32, 0.35);
                     let [r, g, b] = dst_stratum.badge_rgb();
                     let arc_alpha = if is_sel { 175 } else { 72 };
@@ -718,6 +883,9 @@ pub fn render_rainforest_viewport(
 
     let mut hitboxes = Vec::with_capacity(world.organisms.len());
     for org in &world.organisms {
+        if world.ledger.keystone_removed && org.species.is_keystone_species() {
+            continue;
+        }
         if let Some((sp, _)) = project_point(&vp, rect, org.pos + Vec3::new(0.0, 0.25, 0.0)) {
             hitboxes.push((org.id, sp));
             if selected_id == Some(org.id) {
