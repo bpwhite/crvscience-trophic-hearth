@@ -5,6 +5,9 @@ edition = "2021"
 authors = ["Bryan P. White <crvscience.com>"]
 license = "GPL-3.0-or-later"
 description = "Nine-biome 3D living trophic diorama and fireplace simulator (Neotropical Rainforest, Pacific Giant Kelp Forest, Indo-Pacific Coral Reef, Temperate Freshwater Lake, Deep-Sea Hydrothermal Vent, PNW Old-Growth Salmon Creek, Midwater Pelagic Rift, Cold-Seep Brine Pool, and Rocky Intertidal Tidepool) with biologically accurate 3D anatomy, physics, bioacoustics, and diurnal cycles."
+homepage = "https://crvscience.com/apps"
+repository = "https://github.com/bpwhite/crvscience-trophic-hearth"
+readme = "README.md"
 
 [features]
 default = ["live-audio"]

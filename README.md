@@ -6,6 +6,8 @@ A 9-biome standalone safe-Rust (`#![forbid(unsafe_code)]` library core) **3D Tro
 - **Website**: [CRV Science Network](https://crvscience.com) · [CRV Science Public Apps](https://crvscience.com/apps)
 - **License**: GNU General Public License v3.0 or later (`GPL-3.0-or-later`, see [LICENSE](LICENSE))
 
+![TrophicHearth Workbench](validation/headless_screenshot.png)
+
 ---
 
 ## Build & Run Quickstart
