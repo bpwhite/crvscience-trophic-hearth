@@ -20,6 +20,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 use trophic_hearth::app::{render_headless_screenshot, TrophicHearthApp};
 use trophic_hearth::audio::export_ambient_soundscape_wav;
+use trophic_hearth::cascade_sweep::export_cascade_sweep_files;
 use trophic_hearth::icon::app_egui_icon;
 use trophic_hearth::persistence::TrophicSnapshotV1;
 use trophic_hearth::trophic::{BiomeKind, TrophicFocus, TrophicStratum};
@@ -151,6 +152,25 @@ enum Commands {
         #[arg(long, default_value = "trophic_hearth.wav")]
         output: PathBuf,
     },
+
+    /// Run trophic cascade resilience & keystone perturbation sensitivity sweep (JSON + CSV)
+    CascadeSweep {
+        /// Biome to sweep (omit for all 9 biomes)
+        #[arg(long, value_enum)]
+        biome: Option<CliBiome>,
+
+        /// Simulated ODE duration in seconds
+        #[arg(long, default_value_t = 12.0)]
+        seconds: f32,
+
+        /// ODE integration step in seconds
+        #[arg(long, default_value_t = 0.05)]
+        dt: f32,
+
+        /// Output folder for trophic_cascade_sweep.json and .csv
+        #[arg(long, default_value = "exports")]
+        out_dir: PathBuf,
+    },
 }
 
 #[cfg(windows)]
@@ -267,6 +287,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 output.display()
             );
         }
+
+        Some(Commands::CascadeSweep {
+            biome,
+            seconds,
+            dt,
+            out_dir,
+        }) => {
+            let filter = biome.map(BiomeKind::from);
+            let (jp, cp, rep) = export_cascade_sweep_files(&out_dir, filter, seconds, dt)?;
+            println!(
+                "Completed trophic cascade sensitivity sweep ({} biome(s), {} rows): Intact resilience {:.2} vs Keystone-Removed {:.2} (delta {:+.2})",
+                rep.biome_count,
+                rep.rows.len(),
+                rep.mean_resilience_intact,
+                rep.mean_resilience_keystone_removed,
+                rep.keystone_vulnerability_delta
+            );
+            println!("  Wrote JSON -> {} and CSV -> {}", jp.display(), cp.display());
+        }
     }
 
     Ok(())
@@ -292,5 +331,56 @@ mod tests {
             res.expect_err("stratum 7 fails validation"),
             "Invalid --stratum 7 (expected 0..=4)"
         );
+    }
+
+    #[test]
+    fn cli_parses_cascade_sweep_subcommand_and_biome_filter() {
+        let parsed = Cli::try_parse_from([
+            "trophic-hearth",
+            "cascade-sweep",
+            "--biome",
+            "kelp",
+            "--seconds",
+            "8.0",
+            "--dt",
+            "0.05",
+            "--out-dir",
+            "sweep_out",
+        ])
+        .expect("clap parses cascade-sweep");
+        match parsed.command {
+            Some(Commands::CascadeSweep {
+                biome,
+                seconds,
+                dt,
+                out_dir,
+            }) => {
+                assert_eq!(biome, Some(CliBiome::Kelp));
+                assert!((seconds - 8.0).abs() < 1e-6);
+                assert!((dt - 0.05).abs() < 1e-6);
+                assert_eq!(out_dir, PathBuf::from("sweep_out"));
+            }
+            other => panic!("Expected CascadeSweep, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn cli_cascade_sweep_defaults_to_all_biomes() {
+        let parsed = Cli::try_parse_from(["trophic-hearth", "cascade-sweep"])
+            .expect("clap parses cascade-sweep defaults");
+        match parsed.command {
+            Some(Commands::CascadeSweep {
+                biome,
+                seconds,
+                dt,
+                out_dir,
+            }) => {
+                assert_eq!(biome, None);
+                assert!((seconds - 12.0).abs() < 1e-6);
+                assert!((dt - 0.05).abs() < 1e-6);
+                assert_eq!(out_dir, PathBuf::from("exports"));
+            }
+            other => panic!("Expected CascadeSweep, got {:?}", other),
+        }
     }
 }

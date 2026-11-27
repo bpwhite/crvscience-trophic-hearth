@@ -23,6 +23,9 @@ cargo run --release -- simulate --biome vent --hours 12 --output vent_sim.json
 # Synthesize an 18-second stereo 44.1 kHz bioacoustic soundscape WAV
 cargo run --release -- export-wav --seconds 18 --output soundscape.wav
 
+# Run trophic cascade resilience & keystone perturbation sensitivity sweep (JSON + CSV)
+cargo run --release -- cascade-sweep --seconds 12 --out-dir exports
+
 # Render an offscreen 1600x1000 PNG screenshot (1=Tidepool, 2=Coral Reef, 3=Vent)
 cargo run --release -- --headless-screenshot validation/headless_screenshot.png --screenshot-view 1
 
@@ -45,6 +48,7 @@ All single-key shortcuts are guarded by `!ctx.wants_keyboard_input()`, so typing
 | `Shift+0` .. `Shift+4` | Focus single trophic stratum (`Shift+0` = `L0`, `Shift+1` = `L1`, `Shift+2` = `L2`, `Shift+3` = `L3`, `Shift+4` = `L4`) |
 | `[` / `]` | Cycle previous / next biome across all 9 ecosystems |
 | `K` | Toggle keystone guild removal (`keystone_removed`) |
+| `Ctrl+K` | Open fuzzy command palette (`Up`/`Down`/`Enter`/`Esc`) for biomes, strata, cameras & cascade sweeps |
 | `F` | Toggle calm 3D food-web energy-flux arcs (`show_flux_arcs`) |
 | `Space` | Pause / resume simulation |
 | `Tab` | Toggle borderless Zen Hearth Mode |
@@ -71,6 +75,7 @@ All single-key shortcuts are guarded by `!ctx.wants_keyboard_input()`, so typing
 | `gui` | (default) | Launch interactive 3D Living Diorama Fireplace GUI |
 | `simulate` | `--hours 24 --dt 0.05` | Run headless ecological simulation to `TrophicSnapshotV1` JSON (`--output`) |
 | `export-wav` | `--seconds 18` | Synthesize `44.1 kHz` stereo 16-bit PCM WAV bioacoustic soundscape (`--output`) |
+| `cascade-sweep` | `--seconds 12 --dt 0.05` | Run baseline vs. keystone/apex/herbivore perturbation sensitivity sweep (`trophic_cascade_sweep.json`/`.csv`) |
 
 ---
 
@@ -116,7 +121,7 @@ Baseline validation artifacts stored in `validation/trophic_hearth_validation_su
 | `validation/headless_screenshot_2.png` | View `2` (`IndoPacificCoralReef`), `1600x1000` RGBA PNG, `312,673` bytes |
 | `validation/headless_screenshot_3.png` | View `3` (`DeepSeaHydrothermalVent`), `1600x1000` RGBA PNG, `245,512` bytes |
 | Baseline Summary JSON (`validation/trophic_hearth_validation_summary.json`) | `14` unit/integration tests (`14 passed; 0 failed`) in baseline snapshot |
-| Post-Upgrade `cargo test --all-targets` (`src/main.rs` + `tests/simulation_tests.rs`) | `20` passed (`1` unit + `19` integration), `0` failed, `0` ignored (`0` compiler warnings) |
+| Post-Upgrade `cargo test --all-targets` (`src/main.rs` + `tests/simulation_tests.rs`) | `29` passed (`3` CLI unit + `26` integration), `0` failed, `0` ignored (`0` compiler warnings) |
 
 ---
 

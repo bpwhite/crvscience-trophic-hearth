@@ -31,6 +31,7 @@
 
 pub mod app;
 pub mod audio;
+pub mod cascade_sweep;
 pub mod events;
 pub mod icon;
 pub mod models_3d;
@@ -41,6 +42,11 @@ pub mod physics;
 pub mod renderer;
 pub mod trophic;
 pub mod world;
+
+pub use cascade_sweep::{
+    export_cascade_sweep_files, format_cascade_sweep_csv, run_trophic_cascade_sensitivity_sweep,
+    CascadeRegimeMetrics, CascadeSensitivityReport, PerturbationRegime,
+};
 
 pub const APP_NAME: &str = "TrophicHearth";
 pub const APP_VERSION: &str = "0.9.3";

@@ -14,6 +14,7 @@
 // along with this program.  If not, see <https://gnu.org>.
 
 use crate::audio::{export_ambient_soundscape_wav, BioacousticEngine};
+use crate::cascade_sweep::{export_cascade_sweep_files, CascadeSensitivityReport};
 use crate::events::StochasticEventKind;
 use crate::persistence::{PersistenceStore, SaveSlotSummary, TrophicSnapshotV1};
 use crate::renderer::{render_rainforest_viewport, CameraPreset, DioramaCamera};
@@ -22,6 +23,48 @@ use crate::world::RainforestWorld;
 use egui::{Color32, RichText, Sense};
 use std::path::PathBuf;
 use std::time::Instant;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrophicPaletteAction {
+    SwitchBiome(BiomeKind),
+    SetFocus(TrophicFocus),
+    CameraPreset(CameraPreset),
+    ToggleKeystone,
+    ToggleFluxArcs,
+    TogglePause,
+    ToggleHearthMode,
+    ToggleMute,
+    RunCascadeSweepAllBiomes,
+    RunCascadeSweepActiveBiome,
+}
+
+fn fuzzy_trophic_score(query: &str, candidate: &str) -> Option<i32> {
+    let q: Vec<char> = query.trim().to_ascii_lowercase().chars().collect();
+    if q.is_empty() {
+        return Some(0);
+    }
+    let cand_lower = candidate.to_ascii_lowercase();
+    if let Some(pos) = cand_lower.find(&q.iter().collect::<String>()) {
+        return Some(200 - pos as i32);
+    }
+    let mut qi = 0usize;
+    let mut score = 0i32;
+    let mut prev_match = false;
+    for ch in cand_lower.chars() {
+        if qi < q.len() && ch == q[qi] {
+            score += if prev_match { 12 } else { 5 };
+            prev_match = true;
+            qi += 1;
+        } else {
+            prev_match = false;
+        }
+    }
+    if qi == q.len() {
+        Some(score)
+    } else {
+        None
+    }
+}
 
 pub struct TrophicHearthApp {
     pub world: RainforestWorld,
@@ -37,6 +80,12 @@ pub struct TrophicHearthApp {
     pub selected_organism_id: Option<u32>,
     pub slot_name_input: String,
     pub status_banner: String,
+    pub show_command_palette: bool,
+    pub command_palette_query: String,
+    pub command_palette_selected: usize,
+    pub palette_focus_pending: bool,
+    pub export_dir_input: String,
+    pub last_cascade_report: Option<CascadeSensitivityReport>,
     last_frame: Instant,
 }
 
@@ -67,6 +116,12 @@ impl TrophicHearthApp {
             selected_organism_id: None,
             slot_name_input: "trophic_snapshot_01".to_string(),
             status_banner: String::new(),
+            show_command_palette: false,
+            command_palette_query: String::new(),
+            command_palette_selected: 0,
+            palette_focus_pending: false,
+            export_dir_input: "exports".to_string(),
+            last_cascade_report: None,
             last_frame: Instant::now(),
         }
     }
@@ -94,6 +149,12 @@ impl TrophicHearthApp {
             selected_organism_id: None,
             slot_name_input: "trophic_snapshot_01".to_string(),
             status_banner: String::new(),
+            show_command_palette: false,
+            command_palette_query: String::new(),
+            command_palette_selected: 0,
+            palette_focus_pending: false,
+            export_dir_input: "exports".to_string(),
+            last_cascade_report: None,
             last_frame: Instant::now(),
         }
     }
@@ -105,6 +166,96 @@ impl TrophicHearthApp {
             self.selected_organism_id = None;
             self.camera.snap_to_preset(CameraPreset::SideDiorama);
             self.status_banner = format!("Biome: {}", biome.title());
+        }
+    }
+
+    pub fn export_cascade_sweep(&mut self, active_only: bool) {
+        let dir = if self.export_dir_input.trim().is_empty() {
+            "exports"
+        } else {
+            self.export_dir_input.trim()
+        };
+        let filter = if active_only {
+            Some(self.world.biome)
+        } else {
+            None
+        };
+        match export_cascade_sweep_files(dir, filter, 12.0, 0.05) {
+            Ok((jp, cp, rep)) => {
+                self.status_banner = format!(
+                    "Cascade Sweep ({} biome(s)): Intact {:.1} vs Keystone-Removed {:.1} (delta {:+.1}) -> {} & {}",
+                    rep.biome_count,
+                    rep.mean_resilience_intact,
+                    rep.mean_resilience_keystone_removed,
+                    rep.keystone_vulnerability_delta,
+                    jp.display(),
+                    cp.display()
+                );
+                self.last_cascade_report = Some(rep);
+            }
+            Err(err) => {
+                self.status_banner = format!("Cascade sweep export error: {err}");
+            }
+        }
+    }
+
+    pub fn palette_commands() -> Vec<(&'static str, &'static str, TrophicPaletteAction)> {
+        let mut cmds = Vec::new();
+        for b in BiomeKind::ALL {
+            cmds.push((b.title(), "Biomes", TrophicPaletteAction::SwitchBiome(b)));
+        }
+        cmds.push(("Lens: All Strata (0)", "Trophic Lens", TrophicPaletteAction::SetFocus(TrophicFocus::AllStrata)));
+        for st in TrophicStratum::ALL {
+            cmds.push((st.short_label(), "Trophic Lens", TrophicPaletteAction::SetFocus(TrophicFocus::Single(st))));
+        }
+        cmds.push(("Camera: Side Diorama (1)", "Camera", TrophicPaletteAction::CameraPreset(CameraPreset::SideDiorama)));
+        cmds.push(("Camera: Underbrush / Macro (2)", "Camera", TrophicPaletteAction::CameraPreset(CameraPreset::UnderbrushStalkMacro)));
+        cmds.push(("Camera: Canopy / Apex (3)", "Camera", TrophicPaletteAction::CameraPreset(CameraPreset::CanopyAmbushPerch)));
+        cmds.push(("Camera: Substrate / Decomposers (4)", "Camera", TrophicPaletteAction::CameraPreset(CameraPreset::SoilDecomposerLens)));
+        cmds.push(("Cascade: Toggle Keystone Guild Removal (K)", "Simulation", TrophicPaletteAction::ToggleKeystone));
+        cmds.push(("Cascade: Toggle 3D Energy-Flux Arcs (F)", "Simulation", TrophicPaletteAction::ToggleFluxArcs));
+        cmds.push(("Simulation: Play / Pause (Space)", "Simulation", TrophicPaletteAction::TogglePause));
+        cmds.push(("View: Toggle Zen Hearth Mode (Tab)", "View", TrophicPaletteAction::ToggleHearthMode));
+        cmds.push(("Audio: Mute / Unmute Bioacoustics (M)", "Audio", TrophicPaletteAction::ToggleMute));
+        cmds.push(("Analyze: Cascade Sensitivity Sweep (All 9 Biomes -> JSON/CSV)", "Analysis", TrophicPaletteAction::RunCascadeSweepAllBiomes));
+        cmds.push(("Analyze: Cascade Sensitivity Sweep (Active Biome -> JSON/CSV)", "Analysis", TrophicPaletteAction::RunCascadeSweepActiveBiome));
+        cmds
+    }
+
+    pub fn filtered_palette_commands(&self) -> Vec<(&'static str, &'static str, TrophicPaletteAction)> {
+        let q = self.command_palette_query.trim();
+        let all = Self::palette_commands();
+        if q.is_empty() {
+            return all;
+        }
+        let mut scored: Vec<(i32, (&'static str, &'static str, TrophicPaletteAction))> = all
+            .into_iter()
+            .filter_map(|item| {
+                let hay = format!("{} {}", item.1, item.0);
+                fuzzy_trophic_score(q, &hay).map(|s| (s, item))
+            })
+            .collect();
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1 .0.cmp(b.1 .0)));
+        scored.into_iter().map(|(_, item)| item).collect()
+    }
+
+    pub fn execute_palette_action(&mut self, action: TrophicPaletteAction) {
+        match action {
+            TrophicPaletteAction::SwitchBiome(b) => self.switch_biome(b),
+            TrophicPaletteAction::SetFocus(f) => self.world.focus = f,
+            TrophicPaletteAction::CameraPreset(p) => self.camera.apply_preset(p),
+            TrophicPaletteAction::ToggleKeystone => {
+                self.world.ledger.keystone_removed = !self.world.ledger.keystone_removed;
+                self.clear_selected_if_removed_keystone();
+            }
+            TrophicPaletteAction::ToggleFluxArcs => {
+                self.world.ledger.show_flux_arcs = !self.world.ledger.show_flux_arcs;
+            }
+            TrophicPaletteAction::TogglePause => self.paused = !self.paused,
+            TrophicPaletteAction::ToggleHearthMode => self.zen_hearth_mode = !self.zen_hearth_mode,
+            TrophicPaletteAction::ToggleMute => self.audio.muted = !self.audio.muted,
+            TrophicPaletteAction::RunCascadeSweepAllBiomes => self.export_cascade_sweep(false),
+            TrophicPaletteAction::RunCascadeSweepActiveBiome => self.export_cascade_sweep(true),
         }
     }
 
@@ -139,11 +290,25 @@ impl TrophicHearthApp {
         self.last_frame = now;
         self.camera.step(raw_dt);
 
-        if ctx.input(|i| i.key_pressed(egui::Key::F1)) {
+        let wants_kb = ctx.wants_keyboard_input();
+        let ctrl_k = ctx.input(|i| (i.modifiers.ctrl || i.modifiers.command) && i.key_pressed(egui::Key::K));
+        if ctrl_k {
+            if self.show_command_palette {
+                self.show_command_palette = false;
+            } else if !wants_kb {
+                self.show_command_palette = true;
+                self.command_palette_query.clear();
+                self.command_palette_selected = 0;
+                self.palette_focus_pending = true;
+            }
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::F1)) && !self.show_command_palette {
             self.show_about_window = !self.show_about_window;
         }
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            if self.show_about_window {
+            if self.show_command_palette {
+                self.show_command_palette = false;
+            } else if self.show_about_window {
                 self.show_about_window = false;
             } else if self.zen_hearth_mode {
                 self.zen_hearth_mode = false;
@@ -152,7 +317,7 @@ impl TrophicHearthApp {
             }
         }
         let mut tab_toggled_hearth = false;
-        if !ctx.wants_keyboard_input() {
+        if !wants_kb && !self.show_command_palette {
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab)) {
                 self.zen_hearth_mode = !self.zen_hearth_mode;
                 tab_toggled_hearth = true;
@@ -1079,6 +1244,13 @@ impl TrophicHearthApp {
                                     }
                                 }
                             }
+                            if ui
+                                .small_button("Cascade Sweep (JSON+CSV)")
+                                .on_hover_text("Run baseline vs. keystone-removed vs. apex/herbivore perturbation sensitivity sweep across all 9 biomes")
+                                .clicked()
+                            {
+                                self.export_cascade_sweep(false);
+                            }
                             if ui.small_button("Open SQLite DB (.sqlite3)").clicked() {
                                 if let Some(path) = rfd::FileDialog::new()
                                     .add_filter("SQLite Database", &["sqlite3", "sqlite", "db"])
@@ -1374,6 +1546,84 @@ impl TrophicHearthApp {
         if tab_toggled_hearth {
             if let Some(fid) = ctx.memory(|m| m.focused()) {
                 ctx.memory_mut(|m| m.surrender_focus(fid));
+            }
+        }
+
+        if self.show_command_palette {
+            let filtered = self.filtered_palette_commands();
+            if !filtered.is_empty() {
+                self.command_palette_selected = self.command_palette_selected.min(filtered.len() - 1);
+            } else {
+                self.command_palette_selected = 0;
+            }
+            let (up_pressed, down_pressed, enter_pressed) = ctx.input(|i| {
+                (
+                    i.key_pressed(egui::Key::ArrowUp),
+                    i.key_pressed(egui::Key::ArrowDown),
+                    i.key_pressed(egui::Key::Enter),
+                )
+            });
+            if up_pressed && !filtered.is_empty() {
+                self.command_palette_selected = if self.command_palette_selected == 0 {
+                    filtered.len() - 1
+                } else {
+                    self.command_palette_selected - 1
+                };
+            }
+            if down_pressed && !filtered.is_empty() {
+                self.command_palette_selected = (self.command_palette_selected + 1) % filtered.len();
+            }
+            let mut exec_act: Option<TrophicPaletteAction> = if enter_pressed {
+                filtered.get(self.command_palette_selected).map(|(_, _, a)| *a)
+            } else {
+                None
+            };
+            let mut open = self.show_command_palette;
+            egui::Window::new("Command Palette (Ctrl+K)")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_TOP, egui::Vec2::new(0.0, 56.0))
+                .default_width(540.0)
+                .show(ctx, |ui| {
+                    let edit = ui.add(
+                        egui::TextEdit::singleline(&mut self.command_palette_query)
+                            .id(egui::Id::new("trophic_cmd_palette_input"))
+                            .desired_width(f32::INFINITY)
+                            .hint_text("Filter biomes, trophic strata, cameras, or cascade sensitivity sweeps..."),
+                    );
+                    if self.palette_focus_pending {
+                        edit.request_focus();
+                        self.palette_focus_pending = false;
+                    }
+                    if edit.changed() {
+                        self.command_palette_selected = 0;
+                    }
+                    ui.add_space(4.0);
+                    egui::ScrollArea::vertical().max_height(270.0).show(ui, |ui| {
+                        if filtered.is_empty() {
+                            ui.small("No matching commands.");
+                        } else {
+                            for (idx, (label, group, act)) in filtered.iter().enumerate() {
+                                let selected = idx == self.command_palette_selected;
+                                if ui
+                                    .selectable_label(selected, format!("[{group}] {label}"))
+                                    .clicked()
+                                {
+                                    exec_act = Some(*act);
+                                }
+                            }
+                        }
+                    });
+                    ui.separator();
+                    ui.small("Up/Down: Navigate  |  Enter: Execute  |  Esc: Close");
+                });
+            if !open {
+                self.show_command_palette = false;
+            }
+            if let Some(act) = exec_act {
+                self.show_command_palette = false;
+                self.execute_palette_action(act);
             }
         }
     }

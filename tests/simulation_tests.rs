@@ -13,8 +13,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://gnu.org>.
 
-use trophic_hearth::app::TrophicHearthApp;
+use trophic_hearth::app::{TrophicHearthApp, TrophicPaletteAction};
 use trophic_hearth::audio::{export_ambient_soundscape_wav, synthesize_cue_stereo};
+use trophic_hearth::cascade_sweep::{
+    export_cascade_sweep_files, format_cascade_sweep_csv, run_trophic_cascade_sensitivity_sweep,
+    CascadeSensitivityReport, PerturbationRegime,
+};
 use trophic_hearth::events::{SoundCue, SoundCueKind, StochasticEventKind};
 use trophic_hearth::models_3d::append_organism_geometry;
 use trophic_hearth::organisms::{BehaviorState, Species};
@@ -939,4 +943,200 @@ fn aphotic_biomes_gate_caustics_flux_arcs_anchor_producers_and_wgsl_validates() 
     validator
         .validate(&module)
         .expect("rainforest_diorama.wgsl must pass naga validation");
+}
+
+#[test]
+fn cascade_sensitivity_sweep_covers_all_nine_biomes_and_four_regimes() {
+    let report = run_trophic_cascade_sensitivity_sweep(None, 8.0, 0.05);
+    assert_eq!(report.schema_version, "trophic_hearth_cascade_sweep_v1");
+    assert_eq!(report.biome_count, 9);
+    assert_eq!(report.rows.len(), 36);
+    assert!(report.mean_resilience_intact > report.mean_resilience_keystone_removed);
+    assert!(report.keystone_vulnerability_delta > 0.0);
+    for row in &report.rows {
+        assert!(row.shannon_trophic_evenness > 0.0 && row.shannon_trophic_evenness <= 1.0);
+        assert!(row.cumulative_gpp_kcal > 0.0);
+    }
+}
+
+#[test]
+fn cascade_sweep_tidepool_keystone_removal_releases_herbivores_above_intact() {
+    let report = run_trophic_cascade_sensitivity_sweep(
+        Some(BiomeKind::RockyIntertidalTidepool),
+        10.0,
+        0.05,
+    );
+    assert_eq!(report.biome_count, 1);
+    assert_eq!(report.rows.len(), 4);
+    let intact = report
+        .rows
+        .iter()
+        .find(|r| r.regime_code == PerturbationRegime::BaselineIntact.code())
+        .expect("intact row");
+    let removed = report
+        .rows
+        .iter()
+        .find(|r| r.regime_code == PerturbationRegime::KeystoneRemoved.code())
+        .expect("keystone removed row");
+    assert!(
+        removed.final_l2_kcal > intact.final_l2_kcal * 1.15,
+        "Pisaster removal should release L2 mussels ({} vs {})",
+        removed.final_l2_kcal,
+        intact.final_l2_kcal
+    );
+    assert!(removed.cascade_amplification_index > intact.cascade_amplification_index);
+}
+
+#[test]
+fn cascade_sweep_json_and_csv_export_roundtrip_are_valid() {
+    let out_dir = std::env::temp_dir().join(format!(
+        "trophic_cascade_sweep_test_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&out_dir);
+    let (jp, cp, rep) = export_cascade_sweep_files(
+        &out_dir,
+        Some(BiomeKind::PacificKelpForest),
+        6.0,
+        0.05,
+    )
+    .expect("cascade sweep export succeeds");
+    assert!(jp.exists());
+    assert!(cp.exists());
+
+    let parsed: CascadeSensitivityReport =
+        serde_json::from_str(&std::fs::read_to_string(&jp).expect("read json"))
+            .expect("parse cascade JSON");
+    assert_eq!(parsed.rows.len(), rep.rows.len());
+
+    let csv = format_cascade_sweep_csv(&parsed);
+    let lines: Vec<&str> = csv.lines().collect();
+    assert_eq!(lines.len(), 5, "header + 4 perturbation regimes");
+    assert!(lines[0].starts_with("biome_short,biome_title,regime_code"));
+
+    let _ = std::fs::remove_dir_all(&out_dir);
+}
+
+#[test]
+fn cascade_sweep_apex_shock_and_herbivore_pulse_produce_distinct_excursions() {
+    let report = run_trophic_cascade_sensitivity_sweep(
+        Some(BiomeKind::IndoPacificCoralReef),
+        6.0,
+        0.05,
+    );
+    let apex = report
+        .rows
+        .iter()
+        .find(|r| r.regime_code == PerturbationRegime::ApexPredatorShock50Pct.code())
+        .expect("apex shock");
+    let herb = report
+        .rows
+        .iter()
+        .find(|r| r.regime_code == PerturbationRegime::HerbivoreOutbreakPulse60Pct.code())
+        .expect("herbivore pulse");
+    assert!(apex.cascade_amplification_index >= 0.45);
+    assert!(herb.cascade_amplification_index >= 0.55);
+    assert_ne!(apex.final_l2_kcal, herb.final_l2_kcal);
+}
+
+#[test]
+fn ctrl_k_palette_opens_filters_executes_and_keeps_plain_k_keystone_toggle() {
+    let ctx = egui::Context::default();
+    let world = RainforestWorld::new_for_biome(BiomeKind::RockyIntertidalTidepool, 2026);
+    let mut app = TrophicHearthApp::new_headless(world, false);
+
+    // Plain K toggles keystone without opening palette
+    let plain_k = egui::Event::Key {
+        key: egui::Key::K,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    };
+    let _ = ctx.run(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            events: vec![plain_k],
+            ..Default::default()
+        },
+        |c| app.ui_step(c, false),
+    );
+    assert!(app.world.ledger.keystone_removed);
+    assert!(!app.show_command_palette);
+
+    // Ctrl+K opens palette
+    let ctrl_k = egui::Event::Key {
+        key: egui::Key::K,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::CTRL,
+    };
+    let _ = ctx.run(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            modifiers: egui::Modifiers::CTRL,
+            events: vec![ctrl_k],
+            ..Default::default()
+        },
+        |c| app.ui_step(c, false),
+    );
+    assert!(app.show_command_palette);
+
+    app.command_palette_query = "Hydrothermal".to_string();
+    let enter = egui::Event::Key {
+        key: egui::Key::Enter,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    };
+    let _ = ctx.run(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            events: vec![enter],
+            ..Default::default()
+        },
+        |c| app.ui_step(c, false),
+    );
+    assert!(!app.show_command_palette);
+    assert_eq!(app.world.biome, BiomeKind::DeepSeaHydrothermalVent);
+}
+
+#[test]
+fn palette_cascade_sweep_action_exports_json_and_csv_from_app() {
+    let out_dir = std::env::temp_dir().join(format!(
+        "trophic_app_sweep_test_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&out_dir);
+    let world = RainforestWorld::new_for_biome(BiomeKind::NeotropicalRainforest, 2026);
+    let mut app = TrophicHearthApp::new_headless(world, false);
+    app.export_dir_input = out_dir.display().to_string();
+    app.execute_palette_action(TrophicPaletteAction::RunCascadeSweepActiveBiome);
+
+    assert!(app.last_cascade_report.is_some());
+    assert!(out_dir.join("trophic_cascade_sweep.json").exists());
+    assert!(out_dir.join("trophic_cascade_sweep.csv").exists());
+    let _ = std::fs::remove_dir_all(&out_dir);
+}
+
+#[test]
+fn cascade_sweep_is_deterministic_across_repeated_runs() {
+    let a = run_trophic_cascade_sensitivity_sweep(Some(BiomeKind::ColdSeepBrinePool), 5.0, 0.05);
+    let b = run_trophic_cascade_sensitivity_sweep(Some(BiomeKind::ColdSeepBrinePool), 5.0, 0.05);
+    assert_eq!(a.rows.len(), b.rows.len());
+    for (ra, rb) in a.rows.iter().zip(b.rows.iter()) {
+        assert!((ra.final_l1_kcal - rb.final_l1_kcal).abs() < 1e-6);
+        assert!((ra.recovery_resilience_score - rb.recovery_resilience_score).abs() < 1e-6);
+    }
 }
